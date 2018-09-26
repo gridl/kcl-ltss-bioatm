@@ -65,7 +65,7 @@ def main():
             mask_sub = viirs_mask[y-win_size:y+win_size+1, x-win_size:x+win_size+1]
 
             # setup output array
-            arr = np.zeros((win_size*2 + 1, win_size*2 + 1, len(bands) + 1))
+            arr = np.zeros((len(bands) + 1, win_size*2 + 1, win_size*2 + 1))
             for i, band in enumerate(bands):
 
                 # extract band data and place in array
@@ -80,8 +80,8 @@ def main():
                     plt.imshow(subset*mask_sub, cmap='gray')
                     plt.savefig(os.path.join(fp.path_to_cnn_grayscales, 'plume_{}.png'.format(p_number)),
                                 bbox_inches='tight')
-                arr[:, :, i] = subset
-            arr[:, :, -1] = mask_sub
+                arr[i, :, :] = subset
+            arr[-1, :, :] = mask_sub
 
             output = os.path.join(fp.path_to_cnn_data_folder, 'plume_{}.npy'.format(p_number))
             with open(output, 'wb+') as fh:
