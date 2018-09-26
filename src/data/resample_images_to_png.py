@@ -74,7 +74,7 @@ def main():
 
         if os.path.isfile(os.path.join(
                 fp.path_to_viirs_sdr_reprojected_fcc, viirs_sdr_fname.replace('h5', 'png'))):
-            print viirs_sdr_fname, 'already resampled'
+            print(viirs_sdr_fname, 'already resampled')
             continue
 
         logger.info("Processing viirs file: " + viirs_sdr_fname)
@@ -91,8 +91,8 @@ def main():
 
             fcc = rgb_viirs(viirs_sdr, utm_resampler, tcc=False)
             misc.imsave(os.path.join(fp.path_to_viirs_sdr_reprojected_fcc, viirs_sdr_fname.replace('h5', 'png')), fcc)
-        except Exception, e:
-            print 'Failed with exception:', e
+        except Exception as e:
+            print('Failed with exception:', e)
             continue
 
 if __name__ == "__main__":
