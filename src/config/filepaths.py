@@ -14,6 +14,6 @@ path_to_viirs_sdr_reprojected_fcc = os.path.join(root_path, 'raw/reprojected_vii
 path_to_viirs_sdr_reprojected_h5 = os.path.join(root_path, 'raw/reprojected_viirs/h5')
 path_to_viirs_plume_masks = os.path.join(root_path, 'raw/reprojected_viirs/mask')
 
-# data in form suitable for CNN
-path_to_cnn_data_folder = os.path.join(root_path, 'interim/cnn_input')
-path_to_cnn_grayscales = os.path.join(root_path, 'interim/cnn_input_grayscale')
+# data in form suitable for models
+path_to_model_data_folder = os.path.join(root_path, 'interim/model_input')
+path_to_model_folder = os.path.join(root_path, 'interim/models')
