@@ -7,8 +7,6 @@ import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn import metrics
-from sklearn.preprocessing import StandardScaler
-from sklearn.decomposition import PCA
 
 import src.config.filepaths as fp
 
