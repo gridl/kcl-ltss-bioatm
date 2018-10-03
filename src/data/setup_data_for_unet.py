@@ -26,7 +26,7 @@ def read_h5(f):
 
 
 def main():
-    win_size = 100
+    win_size = 128
     bands = ['1', '4', '5', '6', '7', '10', '11', '12', '15']
     p_number = 0  # keeps track of all the plumes
 
@@ -62,16 +62,16 @@ def main():
             y = int(c[0])
             x = int(c[1])
 
-            mask_sub = viirs_mask[y-win_size:y+win_size+1, x-win_size:x+win_size+1]
+            mask_sub = viirs_mask[y-win_size:y+win_size, x-win_size:x+win_size]
 
             # setup output array
-            arr = np.zeros((len(bands) + 1, win_size*2 + 1, win_size*2 + 1))
+            arr = np.zeros((win_size*2,  win_size*2, len(bands) + 1))
             for i, band in enumerate(bands):
 
                 # extract band data and place in array
                 ds = viirs_sdr['VIIRS-M'+band][:]
                 ds = np.pad(ds, win_size, 'constant', constant_values=0)
-                subset = ds[y-win_size:y+win_size+1, x-win_size:x+win_size+1]
+                subset = ds[y-win_size:y+win_size, x-win_size:x+win_size]
 
                 # normalise to between 0-1
                 subset = (subset - np.min(subset)) / np.ptp(subset)
@@ -80,8 +80,8 @@ def main():
                     plt.imshow(subset*mask_sub, cmap='gray')
                     plt.savefig(os.path.join(fp.path_to_cnn_grayscales, 'plume_{}.png'.format(p_number)),
                                 bbox_inches='tight')
-                arr[i, :, :] = subset
-            arr[-1, :, :] = mask_sub
+                arr[:, :, i] = subset
+            arr[:, :, -1] = mask_sub
 
             output = os.path.join(fp.path_to_cnn_data_folder, 'plume_{}.npy'.format(p_number))
             with open(output, 'wb+') as fh:
