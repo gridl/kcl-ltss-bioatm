@@ -186,7 +186,7 @@ class CooccurenceMatrixTextures(object):
         den = (self.windowRadius * 2 + 1) ** 2 * 8.0
 
         # convert to probabilities
-        self.GLCM /= den
+        self.GLCM = self.GLCM.astype(float) / den
 
     def __scaleImage(self, image, scaledMin=0., scaledMax=15.):
         """This private method scales the image to 4bit range"""

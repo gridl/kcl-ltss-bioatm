@@ -13,7 +13,7 @@ import src.config.filepaths as fp
 
 def main():
 
-    trees_to_test = [32, 64, 128, 256, 512]
+    trees_to_test = [32]
     bands = ['1', '4', '5', '6', '7', '10', '11', '12', '15']
 
     ds_path = os.path.join(fp.path_to_model_data_folder, 'rf_data.npy')

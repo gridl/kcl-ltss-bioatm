@@ -12,6 +12,7 @@ path_to_viirs_sdr = os.path.join(root_path, 'raw/viirs')
 path_to_viirs_sdr_reprojected_tcc = os.path.join(root_path, 'raw/reprojected_viirs/tcc')
 path_to_viirs_sdr_reprojected_fcc = os.path.join(root_path, 'raw/reprojected_viirs/fcc')
 path_to_viirs_sdr_reprojected_h5 = os.path.join(root_path, 'raw/reprojected_viirs/h5')
+path_to_viirs_sdr_texture_h5 = os.path.join(root_path, 'raw/reprojected_viirs/texture')
 path_to_viirs_plume_masks = os.path.join(root_path, 'raw/reprojected_viirs/mask')
 
 # data in form suitable for models

@@ -5,7 +5,6 @@ import os
 
 import h5py
 import numpy as np
-import scipy.misc as misc
 
 import src.data.tools as tools
 import src.config.filepaths as fp

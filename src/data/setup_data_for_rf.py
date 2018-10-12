@@ -26,7 +26,7 @@ def main():
 
         try:
             sdr_path = os.path.join(fp.path_to_viirs_sdr_reprojected_h5, viirs_sdr_fname)
-            mask_path = sdr_path.replace('/h5', '/mask').replace('_reproj.h5', '-mask.png')
+            mask_path = sdr_path.replace('/h5', '/mask_full_plume').replace('_reproj.h5', '-mask.png')
             bg_mask_path = sdr_path.replace('/h5', '/mask_bg').replace('_reproj.h5', '-bg_mask.png')
 
             sdr = h5py.File(sdr_path,  "r")
@@ -40,17 +40,19 @@ def main():
         smoke_indicies = np.where(smoke_mask == 255)
         bg_indicies = np.where(bg_mask == 255)
 
-        # set up the temp array to
+        # set up the temp array
         n_smoke_samples = len(smoke_indicies[0])
         n_bg_samples = len(bg_indicies[0])
 
-        # restrict bg samples to same shape number as smoke samples
-        bg_samples = np.random.randint(0, high=n_bg_samples, size=n_smoke_samples, dtype='int')
-
-        temp_array = np.zeros((int(n_smoke_samples * 2), len(bands)+1))
+        temp_array = np.zeros((int(n_smoke_samples + n_bg_samples), len(bands)+1))
         temp_array[:n_smoke_samples, -1] = 1  # set smoke flag
 
-        new_line = current_line+n_smoke_samples*2
+        # # reduce bg samples to same as plume
+        # n_bg_samples = len(bg_indicies[0])
+        # bg_samples = np.random.randint(0, high=n_bg_samples, size=n_smoke_samples, dtype='int')
+        # new_line = current_line+n_smoke_samples*2
+
+        new_line = current_line + (n_smoke_samples + n_bg_samples)
 
         for i, band in enumerate(bands):
             # extract band data and place in array
@@ -58,7 +60,7 @@ def main():
 
             smoke_dn = ds[smoke_indicies[0], smoke_indicies[1]]
             bg_dn = ds[bg_indicies[0], bg_indicies[1]]
-            bg_dn = bg_dn[bg_samples]
+            #bg_dn = bg_dn[bg_samples]
 
             temp_array[:n_smoke_samples, i] = smoke_dn
             temp_array[n_smoke_samples:, i] = bg_dn
