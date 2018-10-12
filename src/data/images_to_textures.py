@@ -18,6 +18,7 @@ def main():
 
         # get the blue channel
         blue = sdr['VIIRS-M1'][:]
+        blue = (blue / 256).astype('uint8')
 
         # run GLCM on blue
         texture_generator = textures.CooccurenceMatrixTextures(blue)
