@@ -4,8 +4,8 @@ Contains the various file paths for the Python scripts
 
 import os
 
-#root_path = '/Volumes/INTENSO/kcl-ltss-bioatm'
-root_path = '/home/users/dnfisher/data/kcl-ltss-bioatm'
+root_path = '/Volumes/INTENSO/kcl-ltss-bioatm'
+#root_path = '/home/users/dnfisher/data/kcl-ltss-bioatm'
 
 # paths to raw data
 path_to_viirs_sdr = os.path.join(root_path, 'raw/viirs')

@@ -3,6 +3,7 @@ import os
 
 import numpy as np
 import scipy.misc as misc
+import scipy.ndimage as ndimage
 import h5py
 
 import src.config.filepaths as fp
@@ -11,10 +12,12 @@ import src.config.filepaths as fp
 def main():
 
     bands = ['1', '4', '5', '6', '7', '10', '11', '12', '15']
+    grads = ['1_grad', '4_grad', '5_grad', '6_grad',
+             '7_grad', '10_grad', '11_grad', '12_grad', '15_grad']
 
     # set up the array to hold the data
     samples_estimate = 50000000
-    output_array = np.zeros((samples_estimate, len(bands)+1))  # +1 for mask
+    output_array = np.zeros((samples_estimate, len(bands) + len(grads) + 1))  # +1 for mask
     current_line = 0  # tracks position in numpy array
 
     for viirs_sdr_fname in os.listdir(fp.path_to_viirs_sdr_reprojected_h5):
@@ -26,7 +29,7 @@ def main():
 
         try:
             sdr_path = os.path.join(fp.path_to_viirs_sdr_reprojected_h5, viirs_sdr_fname)
-            mask_path = sdr_path.replace('/h5', '/mask_sub_plume').replace('_reproj.h5', '-mask.png')
+            mask_path = sdr_path.replace('/h5', '/mask_sub_plume_v2').replace('_reproj.h5', '-mask.png')
             bg_mask_path = sdr_path.replace('/h5', '/mask_bg').replace('_reproj.h5', '-bg_mask.png')
 
             sdr = h5py.File(sdr_path,  "r")
@@ -44,20 +47,33 @@ def main():
         n_smoke_samples = len(smoke_indicies[0])
         n_bg_samples = len(bg_indicies[0])
 
-        temp_array = np.zeros((int(n_smoke_samples + n_bg_samples), len(bands)+1))
+        temp_array = np.zeros((int(n_smoke_samples + n_bg_samples),
+                               len(bands) + len(grads) + 1))
         temp_array[:n_smoke_samples, -1] = 1  # set smoke flag
 
         new_line = current_line + (n_smoke_samples + n_bg_samples)
 
-        for i, band in enumerate(bands):
+        index = 0
+        for band in bands:
             # extract band data and place in array
             ds = sdr['VIIRS-M' + band][:]
+
+            # get gradient
+            band_grad = ndimage.filters.sobel(ds)
 
             smoke_dn = ds[smoke_indicies[0], smoke_indicies[1]]
             bg_dn = ds[bg_indicies[0], bg_indicies[1]]
 
-            temp_array[:n_smoke_samples, i] = smoke_dn
-            temp_array[n_smoke_samples:, i] = bg_dn
+            smoke_grad_dn = band_grad[smoke_indicies[0], smoke_indicies[1]]
+            bg_grad_dn = band_grad[bg_indicies[0], bg_indicies[1]]
+
+            temp_array[:n_smoke_samples, index] = smoke_dn
+            temp_array[n_smoke_samples:, index] = bg_dn
+
+            temp_array[:n_smoke_samples, index+1] = smoke_grad_dn
+            temp_array[n_smoke_samples:, index+1] = bg_grad_dn
+
+            index += 2
 
         # insert data into output array and update line
         output_array[current_line:new_line, :] = temp_array
