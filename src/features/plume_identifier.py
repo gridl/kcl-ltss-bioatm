@@ -171,7 +171,7 @@ def extract_label(labelled_image, r, c):
 def match_fires_to_plumes(aod, fire_rows_plume, fire_cols_plume, max_mean_aods):
 
     # stores the final set of suitable labels as a mask
-    label_store = np.zeros(aod.shape)
+    plume_image = np.zeros(aod.shape)
     singleton_fire_rows = []
     singlteon_fire_cols = []
 
@@ -208,14 +208,20 @@ def match_fires_to_plumes(aod, fire_rows_plume, fire_cols_plume, max_mean_aods):
 
         # if we make it here then no other label matches that of the current fire
         # so we can store it in the label store (which is a binary mask)
-        label_store[labelled_image == label_for_fire] = 1
+        plume_image[labelled_image == label_for_fire] = 1
         singleton_fire_rows.append(r)
         singlteon_fire_cols.append(c)
 
-    return label_store, singleton_fire_rows, singlteon_fire_cols
+    return plume_image, singleton_fire_rows, singlteon_fire_cols
 
 
-
+def extract_plumes(plume_image):
+    plume_dict = {}
+    labelled_image = label(plume_image)
+    for region in regionprops(labelled_image):
+        min_r, min_c, max_r, max_c = region.bbox
+        plume_dict[region.label] = {'min_r': min_r, 'min_c': min_c, 'max_r': max_r, 'max_c': max_c}
+    return plume_dict
 
 
 def identify(aod, flag, lat, lon, date_to_find, fire_df):
@@ -243,16 +249,13 @@ def identify(aod, flag, lat, lon, date_to_find, fire_df):
 
     # find plumes with singleton fires (i.e. plumes that are not attached to another fire
     # that is burning more than 10km away)
-    matched_plumes, matched_fire_rows, matched_fire_cols = match_fires_to_plumes(aod, fire_rows_plume,
-                                                                                 fire_cols_plume, max_mean_aods)
+    plume_image, matched_fire_rows, matched_fire_cols = match_fires_to_plumes(aod, fire_rows_plume,
+                                                                              fire_cols_plume, max_mean_aods)
 
-    # now relabel and extract bounding boxes
+    # extract bounding boxes
+    plume_roi_dict = extract_plumes(plume_image)
 
-
-
-
-
-
+    return plume_roi_dict
 
 
 def main():
