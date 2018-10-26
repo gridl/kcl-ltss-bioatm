@@ -1,24 +1,21 @@
 import logging
 import os
+import re
+from datetime import datetime
 
-import h5py
 import pandas as pd
 import numpy as np
+
 from skimage.measure import label, regionprops
 from skimage.morphology import binary_erosion, binary_dilation
+
 from sklearn.cluster import DBSCAN
 from sklearn.neighbors import BallTree
 
-import src.data.tools as tools
 
-# Constants
-PIXEL_SIZE = 750  # size of resampled pixels in m
-FILL_VALUE = np.nan  # resampling fill value
-MIN_FRP = 10  # Only fires greatert han 10 MW are considered in clustering
-CLUSTER_DIST = 10  # fires less than this distance apart (in KM) are clustered
-P_ID_WIN_SIZE = 10  # plume identification window size in pix (half window e.g. for 21 use 10)
-AOD_RATIO_LIMIT = 3  # if ratio is greater than this then assume a plume (also
-DISTANCE_MATRIX = construct_dist_matrix()  # used to determine the distance of a fire from a plume in pixels
+log_fmt = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+logging.basicConfig(level=logging.INFO, format=log_fmt)
+logger = logging.getLogger(__name__)
 
 
 def construct_dist_matrix():
@@ -26,6 +23,14 @@ def construct_dist_matrix():
     y = np.arange(-P_ID_WIN_SIZE, P_ID_WIN_SIZE+1)
     dx, dy = np.meshgrid(x, y)
     return np.sqrt(dx**2 + dy**2)
+
+# Constants
+MIN_FRP = 10  # Only fires greatert han 10 MW are considered in clustering
+CLUSTER_DIST = 10  # fires less than this distance apart (in KM) are clustered
+P_ID_WIN_SIZE = 10  # plume identification window size in pix (half window e.g. for 21 use 10)
+AOD_RATIO_LIMIT = 3  # if ratio is greater than this then assume a plume (also
+AOD_MIN_LIMIT = 0.25  # anything above this that is associated with a fire is assumed to be a plume UPDATE WITH CLIM?
+DISTANCE_MATRIX = construct_dist_matrix()  # used to determine the distance of a fire from a plume in pixels
 
 
 def extract_fires_for_roi(df, ts, extent):
@@ -55,21 +60,6 @@ def read_aod_mask(arr, bit_pos, bit_len, value):
     return mask
 
 
-def resample(aod, flag, lat, lon):
-    resampler = tools.utm_resampler(lat, lon, PIXEL_SIZE)
-
-    lonlats = resampler.area_def.get_lonlats()
-    lat_grid = lonlats[1]
-    lon_grid = lonlats[0]
-
-    mask = aod < 0
-    masked_lats = np.ma.masked_array(resampler.lats, mask)
-    masked_lons = np.ma.masked_array(resampler.lons, mask)
-    aod = resampler.resample_image(aod, masked_lats, masked_lons, fill_value=FV)
-    flag = resampler.resample_image(flag, masked_lats, masked_lons, fill_value=FV)
-    return aod, flag, lat_grid, lon_grid
-
-
 def subset_fires_to_image(lat, lon, fire_df, date_to_find):
 
     fire_subset = fire_df[fire_df.date_time == date_to_find]
@@ -90,17 +80,19 @@ def mean_fire_position(fire_subset_df):
 
 
 def grid_indexes(lat):
-    mask = lat != FILL_VALUE
+
     rows = np.arange(lat.shape[0])
     cols = np.arange(lat.shape[1])
     cols, rows = np.meshgrid(cols, rows)
-    return rows[mask], cols[mask]
+    return rows, cols
 
 
 def build_balltree(lat, lon):
-    mask = lat != FILL_VALUE
-    array_lat_lon = np.dstack([np.deg2rad(lat[mask]),
-                               np.deg2rad(lon[mask])])[0]
+
+    lat_in_rads = np.deg2rad(lat.flatten())
+    lon_in_rads = np.deg2rad(lon.flatten())
+
+    array_lat_lon = np.dstack([lat_in_rads, lon_in_rads])[0]
     return BallTree(array_lat_lon, metric='haversine')
 
 
@@ -111,16 +103,65 @@ def locate_fires_in_image(tree, fire_pos, rows, cols):
     return rows[index], cols[index], np.rad2deg(distance)
 
 
+def haversine(lon1, lat1, lon2, lat2):
+    """
+    Calculate the great circle distance between two points
+    on the earth (specified in decimal degrees)
+
+    All args must be of equal length.
+
+    """
+    lon1, lat1, lon2, lat2 = map(np.radians, [lon1, lat1, lon2, lat2])
+
+    dlon = lon2 - lon1
+    dlat = lat2 - lat1
+
+    a = np.sin(dlat/2.0)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2.0)**2
+
+    c = 2 * np.arcsin(np.sqrt(a))
+    km = 6367 * c
+    return km
+
+
+def locate_fire_in_image(fire_coords, lats, lons, rows, cols):
+
+    fire_rows = []
+    fire_cols = []
+
+    for fire_lat, fire_lon in zip(fire_coords.latitude.values, fire_coords.longitude.values):
+
+        # get approximate location using
+        index = np.argmin(np.linalg.norm(np.array([fire_lat, fire_lon])-np.dstack([lats, lons]), axis=2))
+        r = int(index / lats.shape[1])
+        c = int(index % lats.shape[1])
+
+        # extract window around approx location (from geo and index)
+        rad = 7
+        sub_lats = lats[r-rad:r+rad+1, c-rad:c+rad+1]
+        sub_lons = lons[r-rad:r+rad+1, c-rad:c+rad+1]
+        sub_rows = rows[r-rad:r+rad+1, c-rad:c+rad+1]
+        sub_cols = cols[r-rad:r+rad+1, c-rad:c+rad+1]
+
+        # find exact loc using haversine distance
+        sub_index = np.argmin(haversine(fire_lon, fire_lat, sub_lons, sub_lats))
+        sub_r = int(sub_index / (rad*2+1))
+        sub_c = int(sub_index % (rad*2+1))
+
+        # append row and col for  exact location
+        fire_rows.append(sub_rows[sub_r, sub_c])
+        fire_cols.append(sub_cols[sub_r, sub_c])
+
+    return fire_rows, fire_cols
+
+
+
 def locate_fires_near_plumes(aod, fire_rows, fire_cols):
 
     r_near_plume = []
     c_near_plume = []
-    max_mean_aod_near_fire = []
 
     for r, c in zip(fire_rows, fire_cols):
 
-        r = r[0]
-        c = c[0]
 
         # get bb and aod
         min_r = r - P_ID_WIN_SIZE if r - P_ID_WIN_SIZE > 0 else 0
@@ -151,9 +192,8 @@ def locate_fires_near_plumes(aod, fire_rows, fire_cols):
         if max_mean / min_mean > AOD_RATIO_LIMIT:
             r_near_plume.append(r)
             c_near_plume.append(c)
-            max_mean_aod_near_fire.append(max_mean)
 
-        return r_near_plume, c_near_plume, max_mean_aod_near_fire
+        return r_near_plume, c_near_plume
 
 
 def extract_label(labelled_image, r, c):
@@ -168,51 +208,41 @@ def extract_label(labelled_image, r, c):
         return None
 
 
-def match_fires_to_plumes(aod, fire_rows_plume, fire_cols_plume, max_mean_aods):
+def locate_plumes_with_fires(aod, fire_rows_plume, fire_cols_plume):
+    '''
+    For each fire check its nearest label.  If a label appears
+    more than once it is associated with multiple fires, so
+    get rid of it.
+    '''
 
-    # stores the final set of suitable labels as a mask
-    plume_image = np.zeros(aod.shape)
-    singleton_fire_rows = []
-    singlteon_fire_cols = []
+    mask = aod >= 0.25  # update using climatological data?  Or ML approach? Pros and Cons.
+    mask = binary_erosion(mask)
+    mask = binary_dilation(mask)
 
-    # iterate over all the fires
-    for r, c, mma in zip(fire_rows_plume, fire_cols_plume, max_mean_aods):
+    # label the mask
+    labelled_image = label(mask)
 
-        # consturct mask for plume
-        ratio = mma / aod  # ratio is max mean aod in window near fire over image aod
-        mask = ratio <= AOD_RATIO_LIMIT  # if ratio is smaller than limit then must be above local background
-        mask = binary_erosion(mask)  # get rid of single mask points
-        mask = binary_dilation(mask)  # bring back to full size
+    # find all labels associated with a fire
+    all_plume_labels = []
+    for r, c in zip(fire_rows_plume, fire_cols_plume):
+        nearest_label_for_fire = extract_label(labelled_image, r, c)
 
-        # label the mask
-        labelled_image = label(mask)
+        if nearest_label_for_fire is not None:
+            all_plume_labels.append(nearest_label_for_fire)
 
-        # extract label for current fire
-        label_for_fire = extract_label(labelled_image, r, c)
-        if label_for_fire is None:
-            continue  # no label within window then continue
+    # drop any labels that are duplicated
+    final_plume_labels = []
+    for l in all_plume_labels:
+        appearences = np.sum(all_plume_labels == l)
+        if appearences < 2:
+            final_plume_labels.append(l)
 
-        # extract labelled subsets around the other fires
-        for i, (l, s) in enumerate(zip(fire_rows_plume, fire_cols_plume)):
+    # update labelled image
+    for l in np.unique(labelled_image):
+        if l not in final_plume_labels:
+            labelled_image[labelled_image == l] = 0
 
-            # dont compare to self
-            if (l == r) & (s == c):
-                continue
-
-            # check labels for all other fires
-            labelled_subset_for_another_fire = extract_label(labelled_image, l, s)
-            if label_for_fire is None:
-                continue  # no label within window then continue
-            elif label_for_fire == labelled_subset_for_another_fire:
-                break  # not a singleton fire so do not include
-
-        # if we make it here then no other label matches that of the current fire
-        # so we can store it in the label store (which is a binary mask)
-        plume_image[labelled_image == label_for_fire] = 1
-        singleton_fire_rows.append(r)
-        singlteon_fire_cols.append(c)
-
-    return plume_image, singleton_fire_rows, singlteon_fire_cols
+    return labelled_image
 
 
 def extract_plumes(plume_image):
@@ -224,67 +254,103 @@ def extract_plumes(plume_image):
     return plume_dict
 
 
-def identify(aod, flag, lat, lon, date_to_find, fire_df):
-
-    # first resample data to to remove VIIRS scanning effects
-    aod, flag, lat, lon = resample(aod, flag, lat, lon)
+def identify(aod, lat, lon, date_to_find, fire_df):
 
     # subset fires to only those in the image and with certain FRP
     fire_subset_df = subset_fires_to_image(lat, lon, fire_df, date_to_find)
+    logger.info('...Extracted fires for image roi')
 
     # get mean fire cluster geographic locations
     mean_fire_geo_locs = mean_fire_position(fire_subset_df)
+    logger.info('...clustered fires')
 
     # build sensor grid indexes
     image_rows, image_cols = grid_indexes(lat)
-
-    # build a balltree for the sensor grid
-    tree = build_balltree(lat, lon)
+    logger.info('...built grid indexes to assign fires to image grid')
 
     # locate fires in sensor coordinates
-    fire_rows, fire_cols, _ = locate_fires_in_image(tree, mean_fire_geo_locs, image_rows, image_cols)
+    fire_rows, fire_cols = locate_fire_in_image(mean_fire_geo_locs, lat, lon, image_rows, image_cols)
+    logger.info('...assigned fires to image grid')
 
     # determine those fires that are near to plumes
-    fire_rows_plume, fire_cols_plume, max_mean_aods = locate_fires_near_plumes(aod, fire_rows, fire_cols)
+    fire_rows_plume, fire_cols_plume = locate_fires_near_plumes(aod, fire_rows, fire_cols)
+    logger.info('...reduced fires to those associated with plumes')
 
     # find plumes with singleton fires (i.e. plumes that are not attached to another fire
     # that is burning more than 10km away)
-    plume_image, matched_fire_rows, matched_fire_cols = match_fires_to_plumes(aod, fire_rows_plume,
-                                                                              fire_cols_plume, max_mean_aods)
+    plume_image = locate_plumes_with_fires(aod, fire_rows_plume, fire_cols_plume)
+    logger.info('...reduced plumes to only those matched to a single fire')
 
     # extract bounding boxes
     plume_roi_dict = extract_plumes(plume_image)
+    logger.info('...boudning boxes for single fire plumes extracted')
+
 
     return plume_roi_dict
 
 
 def main():
 
-    # data setup for testing
-    path = '/Volumes/INTENSO/kcl-ltss-bioatm/raw/reprojected_viirs/aod_classifier_test'
-    aod_fname = 'IVAOT_npp_d20150706_t0603097_e0604339_b19108_c20150706075934735034_noaa_ops.h5'
-    geo_fname = 'GMTCO_npp_d20150706_t0603097_e0604339_b19108_c20171126104946623808_noaa_ops.h5'
-    aod_h5 = h5py.File(os.path.join(path, aod_fname), "r")
-    geo_h5 = h5py.File(os.path.join(path, geo_fname), "r")
+    import src.data.tools as tools
+    import h5py
+    import time
 
-    fire_csv = 'fire_archive_V1_26373.csv'
-    fire_df = pd.read_csv(os.path.join(path, fire_csv))
-    fire_df['date_time'] = pd.to_datetime(fire_df['acq_date'])
-
-    aod = aod_h5['All_Data']['VIIRS-Aeros-Opt-Thick-IP_All']['faot550'][:]
-    aod_flags = aod_h5['All_Data']['VIIRS-Aeros-Opt-Thick-IP_All']['QF1'][:]
-    lat = geo_h5['All_Data']['VIIRS-MOD-GEO-TC_All']['Latitude'][:]
-    lon = geo_h5['All_Data']['VIIRS-MOD-GEO-TC_All']['Longitude'][:]
-
-    flag = np.zeros(aod_flags.shape)
-    for k, v in zip(['00', '01', '10', '11'], [0, 1, 2, 3]):
-        mask = read_aod_mask(aod_flags, 0, 2, k)
-        flag[mask] = v
-
-    date_to_find = pd.Timestamp(2016, 7, 31)
+    PIXEL_SIZE = 750  # size of resampled pixels in m for VIIRS data
+    FILL_VALUE = np.nan  # resampling fill value
 
 
-    identify(aod, flag, lat, lon, fire_df)
+    def resample(img, lat, lon, null_value=0):
+        resampler = tools.utm_resampler(lat, lon, PIXEL_SIZE)
+
+        lonlats = resampler.area_def.get_lonlats()
+        lat_grid = lonlats[1]
+        lon_grid = lonlats[0]
+
+        mask = img < null_value
+        masked_lats = np.ma.masked_array(resampler.lats, mask)
+        masked_lons = np.ma.masked_array(resampler.lons, mask)
+        img = resampler.resample_image(img, masked_lats, masked_lons, fill_value=FILL_VALUE)
+        return img, lat_grid, lon_grid
+
+    # define paths to data for testing
+    path = '/Volumes/INTENSO/kcl-ltss-bioatm/raw/plume_id_test'
+
+    logger.info('Running test with VIIRS AOD...')
+
+    # data setup for testing with VIIRS
+    viirs_aod_fname = 'IVAOT_npp_d20150706_t0603097_e0604339_b19108_c20150706075934735034_noaa_ops.h5'
+    viirs_geo_fname = 'GMTCO_npp_d20150706_t0603097_e0604339_b19108_c20171126104946623808_noaa_ops.h5'
+    viirs_aod_h5 = h5py.File(os.path.join(path, 'VIIRS', viirs_aod_fname), "r")
+    viirs_geo_h5 = h5py.File(os.path.join(path, 'VIIRS', viirs_geo_fname), "r")
+
+    viirs_fire_csv = 'fire_archive_V1_26373.csv'
+    viirs_fire_df = pd.read_csv(os.path.join(path, 'VIIRS', viirs_fire_csv))
+    viirs_fire_df['date_time'] = pd.to_datetime(viirs_fire_df['acq_date'])
+
+    viirs_aod = viirs_aod_h5['All_Data']['VIIRS-Aeros-Opt-Thick-IP_All']['faot550'][:]
+    viirs_lat = viirs_geo_h5['All_Data']['VIIRS-MOD-GEO-TC_All']['Latitude'][:]
+    viirs_lon = viirs_geo_h5['All_Data']['VIIRS-MOD-GEO-TC_All']['Longitude'][:]
+    logger.info('...Loaded VIIRS data')
+
+
+    # strip time for viirs fname
+    viirs_dt = datetime.strptime(re.search("[d][0-9]{8}[_][t][0-9]{6}", viirs_aod_fname).group(), 'd%Y%m%d_t%H%M%S')
+    date_to_find = pd.Timestamp(viirs_dt.year, viirs_dt.month, viirs_dt.day)
+
+    # need to resample VIIRS for the image processing parts
+    aod, lat, lon = resample(viirs_aod, viirs_lat, viirs_lon)
+    logger.info('...resampled VIIRS data')
+    t0 = time.clock()
+    viirs_plume_dict = identify(aod, lat, lon, date_to_find, viirs_fire_df)
+    logger.info('...processed VIIRS.  Total time:' + str(time.clock() - t0))
+    logger.info('')
+
+
+    # data setup for testing with MAIAC
+
+
+    # data setup for testing with S5P
+
 
 
 
@@ -292,7 +358,4 @@ def main():
 
 
 if __name__ == "__main__":
-    log_fmt = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    logging.basicConfig(level=logging.INFO, format=log_fmt)
-    logger = logging.getLogger(__name__)
     main()
