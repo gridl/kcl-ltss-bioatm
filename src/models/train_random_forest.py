@@ -15,12 +15,9 @@ def main():
 
     trees_to_test = [32]
     bands = ['1', '4', '5', '6', '7', '10', '11', '12', '15']
-    grads = ['1_grad', '4_grad', '5_grad', '6_grad',
-             '7_grad', '10_grad', '11_grad', '12_grad', '15_grad']
     features = []
     for i in range(len(bands)):
         features.append(bands[i])
-        features.append(grads[i])
 
     ds_path = os.path.join(fp.path_to_model_data_folder, 'rf_data.npy')
     ds = np.load(ds_path)

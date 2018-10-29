@@ -11,7 +11,6 @@ from skimage.measure import label, regionprops
 from skimage.morphology import binary_erosion, binary_dilation
 
 from sklearn.cluster import DBSCAN
-from sklearn.neighbors import BallTree
 
 
 log_fmt = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -201,14 +200,18 @@ def extract_label(labelled_image, r, c):
         return None
 
 
-def locate_plumes_with_fires(aod, fire_rows_plume, fire_cols_plume):
+def locate_plumes_with_fires(aod, fire_rows_plume, fire_cols_plume, ml=False):
     '''
     For each fire check its nearest label.  If a label appears
     more than once it is associated with multiple fires, so
     get rid of it.
     '''
 
-    mask = aod >= 0.25  # update using climatological data?  Or ML approach? Pros and Cons.
+    if ml:
+        pass
+    else:
+        mask = aod >= 0.25  # update using climatological data?  Or ML approach? Pros and Cons.
+
     mask = binary_erosion(mask)
     mask = binary_dilation(mask)
 
