@@ -5,6 +5,7 @@ from datetime import datetime
 
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 
 from skimage.measure import label, regionprops
 from skimage.morphology import binary_erosion, binary_dilation
@@ -87,22 +88,6 @@ def grid_indexes(lat):
     return rows, cols
 
 
-def build_balltree(lat, lon):
-
-    lat_in_rads = np.deg2rad(lat.flatten())
-    lon_in_rads = np.deg2rad(lon.flatten())
-
-    array_lat_lon = np.dstack([lat_in_rads, lon_in_rads])[0]
-    return BallTree(array_lat_lon, metric='haversine')
-
-
-def locate_fires_in_image(tree, fire_pos, rows, cols):
-    point_locations = np.dstack((np.deg2rad(fire_pos.latitude.values),
-                                 np.deg2rad(fire_pos.longitude.values))).squeeze()
-    distance, index = tree.query(point_locations, k=1)
-    return rows[index], cols[index], np.rad2deg(distance)
-
-
 def haversine(lon1, lat1, lon2, lat2):
     """
     Calculate the great circle distance between two points
@@ -130,26 +115,31 @@ def locate_fire_in_image(fire_coords, lats, lons, rows, cols):
 
     for fire_lat, fire_lon in zip(fire_coords.latitude.values, fire_coords.longitude.values):
 
-        # get approximate location using
-        index = np.argmin(np.linalg.norm(np.array([fire_lat, fire_lon])-np.dstack([lats, lons]), axis=2))
-        r = int(index / lats.shape[1])
-        c = int(index % lats.shape[1])
+        try:
 
-        # extract window around approx location (from geo and index)
-        rad = 7
-        sub_lats = lats[r-rad:r+rad+1, c-rad:c+rad+1]
-        sub_lons = lons[r-rad:r+rad+1, c-rad:c+rad+1]
-        sub_rows = rows[r-rad:r+rad+1, c-rad:c+rad+1]
-        sub_cols = cols[r-rad:r+rad+1, c-rad:c+rad+1]
+            # get approximate location using
+            index = np.argmin(np.linalg.norm(np.array([fire_lat, fire_lon])-np.dstack([lats, lons]), axis=2))
+            r = int(index / lats.shape[1])
+            c = int(index % lats.shape[1])
 
-        # find exact loc using haversine distance
-        sub_index = np.argmin(haversine(fire_lon, fire_lat, sub_lons, sub_lats))
-        sub_r = int(sub_index / (rad*2+1))
-        sub_c = int(sub_index % (rad*2+1))
+            # extract window around approx location (from geo and index)
+            rad = 7
+            sub_lats = lats[r-rad:r+rad+1, c-rad:c+rad+1]
+            sub_lons = lons[r-rad:r+rad+1, c-rad:c+rad+1]
+            sub_rows = rows[r-rad:r+rad+1, c-rad:c+rad+1]
+            sub_cols = cols[r-rad:r+rad+1, c-rad:c+rad+1]
 
-        # append row and col for  exact location
-        fire_rows.append(sub_rows[sub_r, sub_c])
-        fire_cols.append(sub_cols[sub_r, sub_c])
+            # find exact loc using haversine distance
+            sub_index = np.argmin(haversine(fire_lon, fire_lat, sub_lons, sub_lats))
+            sub_r = int(sub_index / (rad*2+1))
+            sub_c = int(sub_index % (rad*2+1))
+
+            # append row and col for  exact location
+            fire_rows.append(sub_rows[sub_r, sub_c])
+            fire_cols.append(sub_cols[sub_r, sub_c])
+
+        except:
+            continue
 
     return fire_rows, fire_cols
 
@@ -170,6 +160,9 @@ def locate_fires_near_plumes(aod, fire_rows, fire_cols):
         max_c = c + P_ID_WIN_SIZE + 1 if c + P_ID_WIN_SIZE + 1 < aod.shape[1] else aod.shape[1]
 
         aod_for_window = aod[min_r:max_r, min_c:max_c]
+
+        if np.all(np.isnan(aod_for_window)):
+            continue
 
         # skip windows on edge of image
         if aod_for_window.size != (P_ID_WIN_SIZE * 2 + 1) ** 2:
@@ -193,7 +186,7 @@ def locate_fires_near_plumes(aod, fire_rows, fire_cols):
             r_near_plume.append(r)
             c_near_plume.append(c)
 
-        return r_near_plume, c_near_plume
+    return r_near_plume, c_near_plume
 
 
 def extract_label(labelled_image, r, c):
@@ -276,6 +269,10 @@ def identify(aod, lat, lon, date_to_find, fire_df):
     fire_rows_plume, fire_cols_plume = locate_fires_near_plumes(aod, fire_rows, fire_cols)
     logger.info('...reduced fires to those associated with plumes')
 
+    plt.imshow(aod)
+    plt.plot(fire_cols_plume, fire_rows_plume, 'r.')
+    plt.show()
+
     # find plumes with singleton fires (i.e. plumes that are not attached to another fire
     # that is burning more than 10km away)
     plume_image = locate_plumes_with_fires(aod, fire_rows_plume, fire_cols_plume)
@@ -318,12 +315,12 @@ def main():
     logger.info('Running test with VIIRS AOD...')
 
     # data setup for testing with VIIRS
-    viirs_aod_fname = 'IVAOT_npp_d20150706_t0603097_e0604339_b19108_c20150706075934735034_noaa_ops.h5'
-    viirs_geo_fname = 'GMTCO_npp_d20150706_t0603097_e0604339_b19108_c20171126104946623808_noaa_ops.h5'
+    viirs_aod_fname = 'IVAOT_npp_d20160822_t1702001_e1703242_b24974_c20181017161815133750_noaa_ops.h5'
+    viirs_geo_fname = 'GMTCO_npp_d20160822_t1702001_e1703242_b24974_c20181019184439006772_noaa_ops.h5'
     viirs_aod_h5 = h5py.File(os.path.join(path, 'VIIRS', viirs_aod_fname), "r")
     viirs_geo_h5 = h5py.File(os.path.join(path, 'VIIRS', viirs_geo_fname), "r")
 
-    viirs_fire_csv = 'fire_archive_V1_26373.csv'
+    viirs_fire_csv = 'fire_archive_V1_24485.csv'
     viirs_fire_df = pd.read_csv(os.path.join(path, 'VIIRS', viirs_fire_csv))
     viirs_fire_df['date_time'] = pd.to_datetime(viirs_fire_df['acq_date'])
 
@@ -344,6 +341,8 @@ def main():
     viirs_plume_dict = identify(aod, lat, lon, date_to_find, viirs_fire_df)
     logger.info('...processed VIIRS.  Total time:' + str(time.clock() - t0))
     logger.info('')
+
+    print(viirs_plume_dict)
 
 
     # data setup for testing with MAIAC
