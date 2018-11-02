@@ -1,20 +1,15 @@
 import logging
 import os
 import re
-from datetime import datetime
 
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 import pyproj
-import scipy.ndimage as ndimage
-
 from skimage.measure import label, regionprops
 from skimage.morphology import binary_erosion, binary_dilation
-
 from sklearn.cluster import DBSCAN
-
 
 log_fmt = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 logging.basicConfig(level=logging.INFO, format=log_fmt)
@@ -315,10 +310,7 @@ def identify(aod, lat, lon, date_to_find, fire_df):
 
 def main():
 
-    import src.data.tools as tools
-    import h5py
     from pyhdf.SD import SD, SDC
-    import time
 
     PIXEL_SIZE = 750  # size of resampled pixels in m for VIIRS data
     FILL_VALUE = np.nan  # resampling fill value
