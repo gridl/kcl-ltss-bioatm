@@ -6,6 +6,9 @@ from datetime import datetime
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import pyproj
+import scipy.ndimage as ndimage
 
 from skimage.measure import label, regionprops
 from skimage.morphology import binary_erosion, binary_dilation
@@ -33,31 +36,53 @@ AOD_MIN_LIMIT = 0.25  # anything above this that is associated with a fire is as
 DISTANCE_MATRIX = construct_dist_matrix()  # used to determine the distance of a fire from a plume in pixels
 
 
-def extract_fires_for_roi(df, ts, extent):
-    time_subset = df[df.date_time == ts]
-    time_space_subset = time_subset[((df.latitude > extent['min_lat']) &
-                                    (df.latitude < extent['max_lat']) &
-                                    (df.longitude > extent['min_lon']) &
-                                    (df.longitude < extent['max_lon']))]
-    return time_space_subset
+def read_modis_aod(hdf_file):
+    # Read dataset.
+    aod = hdf_file.select('Optical_Depth_055')[0, :, :] * 0.001  # aod scaling factor
 
 
-def read_aod_mask(arr, bit_pos, bit_len, value):
-    '''Generates mask with given bit information.
-    Parameters
-        bit_pos		-	Position of the specific QA bits in the value string.
-        bit_len		-	Length of the specific QA bits.
-        value  		-	A value indicating the desired condition.
-    '''
-    bitlen = int('1' * bit_len, 2)
+    aod[aod < 0] = 0  # just get rid of the filled values for now
 
-    if type(value) == str:
-        value = int(value, 2)
+    # Read global attribute.
+    fattrs = hdf_file.attributes(full=1)
+    ga = fattrs["StructMetadata.0"]
+    gridmeta = ga[0]
 
-    pos_value = bitlen << bit_pos
-    con_value = value << bit_pos
-    mask = (arr & pos_value) == con_value
-    return mask
+    # Construct the grid.  The needed information is in a global attribute
+    # called 'StructMetadata.0'.  Use regular expressions to tease out the
+    # extents of the grid.
+    ul_regex = re.compile(r'''UpperLeftPointMtrs=\(
+                                      (?P<upper_left_x>[+-]?\d+\.\d+)
+                                      ,
+                                      (?P<upper_left_y>[+-]?\d+\.\d+)
+                                      \)''', re.VERBOSE)
+    match = ul_regex.search(gridmeta)
+    x0 = np.float(match.group('upper_left_x'))
+    y0 = np.float(match.group('upper_left_y'))
+
+    lr_regex = re.compile(r'''LowerRightMtrs=\(
+                                      (?P<lower_right_x>[+-]?\d+\.\d+)
+                                      ,
+                                      (?P<lower_right_y>[+-]?\d+\.\d+)
+                                      \)''', re.VERBOSE)
+    match = lr_regex.search(gridmeta)
+    x1 = np.float(match.group('lower_right_x'))
+    y1 = np.float(match.group('lower_right_y'))
+    ny, nx = aod.shape
+    xinc = (x1 - x0) / nx
+    yinc = (y1 - y0) / ny
+
+    x = np.linspace(x0, x0 + xinc * nx, nx)
+    y = np.linspace(y0, y0 + yinc * ny, ny)
+    xv, yv = np.meshgrid(x, y)
+
+    # In basemap, the sinusoidal projection is global, so we won't use it.
+    # Instead we'll convert the grid back to lat/lons.
+    sinu = pyproj.Proj("+proj=sinu +R=6371007.181 +nadgrids=@null +wktext")
+    wgs84 = pyproj.Proj("+init=EPSG:4326")
+    lon, lat = pyproj.transform(sinu, wgs84, xv, yv)
+
+    return aod, lat, lon
 
 
 def subset_fires_to_image(lat, lon, fire_df, date_to_find):
@@ -116,32 +141,24 @@ def locate_fire_in_image(fire_coords, lats, lons, rows, cols):
 
         try:
 
-            # get approximate location using
-            index = np.argmin(np.linalg.norm(np.array([fire_lat, fire_lon])-np.dstack([lats, lons]), axis=2))
-            r = int(index / lats.shape[1])
-            c = int(index % lats.shape[1])
-
-            # extract window around approx location (from geo and index)
-            rad = 7
-            sub_lats = lats[r-rad:r+rad+1, c-rad:c+rad+1]
-            sub_lons = lons[r-rad:r+rad+1, c-rad:c+rad+1]
-            sub_rows = rows[r-rad:r+rad+1, c-rad:c+rad+1]
-            sub_cols = cols[r-rad:r+rad+1, c-rad:c+rad+1]
+            mask = (lats > fire_lat - 0.05) & (lats < fire_lat + 0.05) & \
+                   (lons > fire_lon - 0.05) & (lons < fire_lon + 0.05)
+            sub_lats = lats[mask]
+            sub_lons = lons[mask]
+            sub_rows = rows[mask]
+            sub_cols = cols[mask]
 
             # find exact loc using haversine distance
             sub_index = np.argmin(haversine(fire_lon, fire_lat, sub_lons, sub_lats))
-            sub_r = int(sub_index / (rad*2+1))
-            sub_c = int(sub_index % (rad*2+1))
 
             # append row and col for  exact location
-            fire_rows.append(sub_rows[sub_r, sub_c])
-            fire_cols.append(sub_cols[sub_r, sub_c])
+            fire_rows.append(sub_rows[sub_index])
+            fire_cols.append(sub_cols[sub_index])
 
         except:
             continue
 
     return fire_rows, fire_cols
-
 
 
 def locate_fires_near_plumes(aod, fire_rows, fire_cols):
@@ -200,17 +217,15 @@ def extract_label(labelled_image, r, c):
         return None
 
 
-def locate_plumes_with_fires(aod, fire_rows_plume, fire_cols_plume, ml=False):
+def locate_plumes_with_fires(aod, fire_rows_plume, fire_cols_plume):
     '''
     For each fire check its nearest label.  If a label appears
     more than once it is associated with multiple fires, so
     get rid of it.
     '''
 
-    if ml:
-        pass
-    else:
-        mask = aod >= 0.25  # update using climatological data?  Or ML approach? Pros and Cons.
+
+    mask = aod >= 0.2  # update using climatological data?  Or ML approach? Pros and Cons.
 
     mask = binary_erosion(mask)
     mask = binary_dilation(mask)
@@ -237,6 +252,10 @@ def locate_plumes_with_fires(aod, fire_rows_plume, fire_cols_plume, ml=False):
     for l in np.unique(labelled_image):
         if l not in final_plume_labels:
             labelled_image[labelled_image == l] = 0
+        elif (labelled_image == l).sum() > 10000:  # get rid of unreasonably large plumes
+            labelled_image[labelled_image == l] = 0
+        elif (labelled_image == l).sum() < 100:  # get rid of unreasonably large plumes
+            labelled_image[labelled_image == l] = 0
 
     return labelled_image
 
@@ -251,6 +270,16 @@ def extract_plumes(plume_image):
 
 
 def identify(aod, lat, lon, date_to_find, fire_df):
+    '''
+
+    :param aod:
+    :param lat:
+    :param lon:
+    :param date_to_find:
+    :param fire_df:
+    :param type:  If type is 0 return plume bounding boxs, else return pixel indicies
+    :return:
+    '''
 
     # subset fires to only those in the image and with certain FRP
     fire_subset_df = subset_fires_to_image(lat, lon, fire_df, date_to_find)
@@ -272,10 +301,6 @@ def identify(aod, lat, lon, date_to_find, fire_df):
     fire_rows_plume, fire_cols_plume = locate_fires_near_plumes(aod, fire_rows, fire_cols)
     logger.info('...reduced fires to those associated with plumes')
 
-    plt.imshow(aod)
-    plt.plot(fire_cols_plume, fire_rows_plume, 'r.')
-    plt.show()
-
     # find plumes with singleton fires (i.e. plumes that are not attached to another fire
     # that is burning more than 10km away)
     plume_image = locate_plumes_with_fires(aod, fire_rows_plume, fire_cols_plume)
@@ -284,71 +309,107 @@ def identify(aod, lat, lon, date_to_find, fire_df):
     # extract bounding boxes
     plume_roi_dict = extract_plumes(plume_image)
     logger.info('...boudning boxes for single fire plumes extracted')
+    return plume_roi_dict, plume_image
 
-
-    return plume_roi_dict
 
 
 def main():
 
     import src.data.tools as tools
     import h5py
+    from pyhdf.SD import SD, SDC
     import time
 
     PIXEL_SIZE = 750  # size of resampled pixels in m for VIIRS data
     FILL_VALUE = np.nan  # resampling fill value
-
-
-    def resample(img, lat, lon, null_value=0):
-        resampler = tools.utm_resampler(lat, lon, PIXEL_SIZE)
-
-        lonlats = resampler.area_def.get_lonlats()
-        lat_grid = lonlats[1]
-        lon_grid = lonlats[0]
-
-        mask = img < null_value
-        masked_lats = np.ma.masked_array(resampler.lats, mask)
-        masked_lons = np.ma.masked_array(resampler.lons, mask)
-        img = resampler.resample_image(img, masked_lats, masked_lons, fill_value=FILL_VALUE)
-        return img, lat_grid, lon_grid
-
-    # define paths to data for testing
     path = '/Volumes/INTENSO/kcl-ltss-bioatm/raw/plume_id_test'
 
-    logger.info('Running test with VIIRS AOD...')
 
-    # data setup for testing with VIIRS
-    viirs_aod_fname = 'IVAOT_npp_d20160822_t1702001_e1703242_b24974_c20181017161815133750_noaa_ops.h5'
-    viirs_geo_fname = 'GMTCO_npp_d20160822_t1702001_e1703242_b24974_c20181019184439006772_noaa_ops.h5'
-    viirs_aod_h5 = h5py.File(os.path.join(path, 'VIIRS', viirs_aod_fname), "r")
-    viirs_geo_h5 = h5py.File(os.path.join(path, 'VIIRS', viirs_geo_fname), "r")
+    # def resample(img, lat, lon, null_value=0):
+    #     resampler = tools.utm_resampler(lat, lon, PIXEL_SIZE)
+    #
+    #     lonlats = resampler.area_def.get_lonlats()
+    #     lat_grid = lonlats[1]
+    #     lon_grid = lonlats[0]
+    #
+    #     mask = img < null_value
+    #     masked_lats = np.ma.masked_array(resampler.lats, mask)
+    #     masked_lons = np.ma.masked_array(resampler.lons, mask)
+    #     img = resampler.resample_image(img, masked_lats, masked_lons, fill_value=FILL_VALUE)
+    #     return img, lat_grid, lon_grid
+    #
+    # # define paths to data for testing
+    #
+    # logger.info('Running test with VIIRS AOD...')
+    #
+    # # data setup for testing with VIIRS
+    # viirs_aod_fname = 'IVAOT_npp_d20160822_t1702001_e1703242_b24974_c20181017161815133750_noaa_ops.h5'
+    # viirs_geo_fname = 'GMTCO_npp_d20160822_t1702001_e1703242_b24974_c20181019184439006772_noaa_ops.h5'
+    # viirs_aod_h5 = h5py.File(os.path.join(path, 'VIIRS', viirs_aod_fname), "r")
+    # viirs_geo_h5 = h5py.File(os.path.join(path, 'VIIRS', viirs_geo_fname), "r")
+    #
+    # viirs_fire_csv = 'fire_archive_V1_24485.csv'
+    # viirs_fire_df = pd.read_csv(os.path.join(path, 'VIIRS', viirs_fire_csv))
+    # viirs_fire_df['date_time'] = pd.to_datetime(viirs_fire_df['acq_date'])
+    #
+    # viirs_aod = viirs_aod_h5['All_Data']['VIIRS-Aeros-Opt-Thick-IP_All']['faot550'][:]
+    # viirs_lat = viirs_geo_h5['All_Data']['VIIRS-MOD-GEO-TC_All']['Latitude'][:]
+    # viirs_lon = viirs_geo_h5['All_Data']['VIIRS-MOD-GEO-TC_All']['Longitude'][:]
+    # logger.info('...Loaded VIIRS data')
+    #
+    #
+    # # strip time for viirs fname
+    # viirs_dt = datetime.strptime(re.search("[d][0-9]{8}[_][t][0-9]{6}", viirs_aod_fname).group(), 'd%Y%m%d_t%H%M%S')
+    # date_to_find = pd.Timestamp(viirs_dt.year, viirs_dt.month, viirs_dt.day)
+    #
+    # # need to resample VIIRS for the image processing parts
+    # aod, lat, lon = resample(viirs_aod, viirs_lat, viirs_lon)
+    # logger.info('...resampled VIIRS data')
+    # t0 = time.clock()
+    # viirs_plume_dict = identify(aod, lat, lon, date_to_find, viirs_fire_df)
+    # logger.info('...processed VIIRS.  Total time:' + str(time.clock() - t0))
+    # logger.info('')
 
+
+
+    # data setup for testing with MAIAC
+    logger.info('Running test with MAIAC AOD...')
+    maiac_aod_fname = 'MCD19A2.A2016235.h12v10.006.2018113135938.hdf'
+    hdf_file = SD(os.path.join(path, 'maiac', maiac_aod_fname), SDC.READ)
+
+    aod, lat, lon = read_modis_aod(hdf_file)
+
+    # lets use viirs fires again
     viirs_fire_csv = 'fire_archive_V1_24485.csv'
     viirs_fire_df = pd.read_csv(os.path.join(path, 'VIIRS', viirs_fire_csv))
     viirs_fire_df['date_time'] = pd.to_datetime(viirs_fire_df['acq_date'])
 
-    viirs_aod = viirs_aod_h5['All_Data']['VIIRS-Aeros-Opt-Thick-IP_All']['faot550'][:]
-    viirs_lat = viirs_geo_h5['All_Data']['VIIRS-MOD-GEO-TC_All']['Latitude'][:]
-    viirs_lon = viirs_geo_h5['All_Data']['VIIRS-MOD-GEO-TC_All']['Longitude'][:]
-    logger.info('...Loaded VIIRS data')
+    date_to_find = pd.Timestamp(2016, 8, 22)
+
+    plume_roi_dict, labelled_image = identify(aod, lat, lon, date_to_find, viirs_fire_df)
 
 
-    # strip time for viirs fname
-    viirs_dt = datetime.strptime(re.search("[d][0-9]{8}[_][t][0-9]{6}", viirs_aod_fname).group(), 'd%Y%m%d_t%H%M%S')
-    date_to_find = pd.Timestamp(viirs_dt.year, viirs_dt.month, viirs_dt.day)
+    plt.close('all')
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.imshow(aod, cmap='gray')
 
-    # need to resample VIIRS for the image processing parts
-    aod, lat, lon = resample(viirs_aod, viirs_lat, viirs_lon)
-    logger.info('...resampled VIIRS data')
-    t0 = time.clock()
-    viirs_plume_dict = identify(aod, lat, lon, date_to_find, viirs_fire_df)
-    logger.info('...processed VIIRS.  Total time:' + str(time.clock() - t0))
-    logger.info('')
+    for region in regionprops(labelled_image):
+        minr, minc, maxr, maxc = region.bbox
+        plt.imshow(aod[minr:maxr, minc:maxc], cmap='gray')
+        plt.xticks([])
+        plt.yticks([])
+        plt.savefig(str(region.label) + '.png', bbox_inches='tight')
 
-    print(viirs_plume_dict)
-
-
-    # data setup for testing with MAIAC
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.imshow(aod, cmap='gray')
+    for region in regionprops(labelled_image):
+        minr, minc, maxr, maxc = region.bbox
+        rect = mpatches.Rectangle((minc, minr), maxc - minc, maxr - minr,
+                                  fill=False, edgecolor='red', linewidth=1)
+        ax.add_patch(rect)
+    plt.xticks([])
+    plt.yticks([])
+    plt.savefig('final_plumes.png', bbox_inches='tight')
 
 
     # data setup for testing with S5P

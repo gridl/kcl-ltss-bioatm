@@ -27,7 +27,7 @@ def main():
 
         try:
             sdr_path = os.path.join(fp.path_to_viirs_ml_reprojected_h5, viirs_sdr_fname)
-            mask_path = sdr_path.replace('/h5', '/mask_full_plume').replace('_reproj.h5', '-mask.png')
+            mask_path = sdr_path.replace('/h5', '/mask_sub_plume_v1').replace('_reproj.h5', '-mask.png')
             bg_mask_path = sdr_path.replace('/h5', '/mask_bg').replace('_reproj.h5', '-bg_mask.png')
 
             sdr = h5py.File(sdr_path,  "r")
