@@ -27,7 +27,7 @@ MIN_FRP = 10  # Only fires greatert han 10 MW are considered in clustering
 CLUSTER_DIST = 10  # fires less than this distance apart (in KM) are clustered
 P_ID_WIN_SIZE = 10  # plume identification window size in pix (half window e.g. for 21 use 10)
 AOD_RATIO_LIMIT = 3  # if ratio is greater than this then assume a plume (also
-AOD_MIN_LIMIT = 0.25  # anything above this that is associated with a fire is assumed to be a plume UPDATE WITH CLIM?
+AOD_MIN_LIMIT = 0.2  # anything above this that is associated with a fire is assumed to be a plume UPDATE WITH CLIM?
 DISTANCE_MATRIX = construct_dist_matrix()  # used to determine the distance of a fire from a plume in pixels
 
 
@@ -220,7 +220,7 @@ def locate_plumes_with_fires(aod, fire_rows_plume, fire_cols_plume):
     '''
 
 
-    mask = aod >= 0.2  # update using climatological data?  Or ML approach? Pros and Cons.
+    mask = aod >= AOD_MIN_LIMIT  # update using climatological data?  Or ML approach? Pros and Cons.
 
     mask = binary_erosion(mask)
     mask = binary_dilation(mask)
