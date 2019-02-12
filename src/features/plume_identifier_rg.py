@@ -25,7 +25,7 @@ def construct_dist_matrix():
 # Constants
 MIN_FRP = 10  # Only fires greater than 10 MW are considered in clustering
 CLUSTER_DIST = 10  # fires less than this distance apart (in KM) are clustered
-THRESHOLD_SET = np.abs(np.arange(0, 1, 0.04) - 1)
+THRESHOLD_SET = np.abs(np.arange(0, 1, 0.02) - 1)
 MIN_RATIO_LIMIT = 5
 P_ID_WIN_SIZE = 10  # plume identification window size in pix (half window e.g. for 21 use 10)
 DISTANCE_MATRIX = construct_dist_matrix()  # used to determine the distance of a fire from a plume in pixels
@@ -392,23 +392,78 @@ def identify(aod, lat, lon, date_to_find, fire_df):
 def main():
 
     from pyhdf.SD import SD, SDC
+    import src.features.tools as tools
+    from datetime import datetime
+    import time
+    import h5py
+
+    PIXEL_SIZE = 750  # size of resampled pixels in m for VIIRS data
+    FILL_VALUE = np.nan  # resampling fill value
     path = '/Volumes/INTENSO/kcl-ltss-bioatm/raw/plume_id_test'
 
-    # data setup for testing with MAIAC
-    logger.info('Running test with MAIAC AOD...')
-    maiac_aod_fname = 'MCD19A2.A2016235.h12v10.006.2018113135938.hdf'
-    hdf_file = SD(os.path.join(path, 'maiac', maiac_aod_fname), SDC.READ)
+    def resample(img, lat, lon, null_value=0):
+        resampler = tools.utm_resampler(lat, lon, PIXEL_SIZE)
 
-    aod, lat, lon = read_modis_aod(hdf_file)
+        lonlats = resampler.area_def.get_lonlats()
+        lat_grid = lonlats[1]
+        lon_grid = lonlats[0]
 
-    # lets use viirs fires again
+        mask = img < null_value
+        masked_lats = np.ma.masked_array(resampler.lats, mask)
+        masked_lons = np.ma.masked_array(resampler.lons, mask)
+        img = resampler.resample_image(img, masked_lats, masked_lons, fill_value=FILL_VALUE)
+        return img, lat_grid, lon_grid
+
+    # define paths to data for testing
+
+    logger.info('Running test with VIIRS AOD...')
+
+    # data setup for testing with VIIRS
+    viirs_aod_fname = 'IVAOT_npp_d20160822_t1702001_e1703242_b24974_c20181017161815133750_noaa_ops.h5'
+    viirs_geo_fname = 'GMTCO_npp_d20160822_t1702001_e1703242_b24974_c20181019184439006772_noaa_ops.h5'
+    viirs_aod_h5 = h5py.File(os.path.join(path, 'VIIRS', viirs_aod_fname), "r")
+    viirs_geo_h5 = h5py.File(os.path.join(path, 'VIIRS', viirs_geo_fname), "r")
+
     viirs_fire_csv = 'fire_archive_V1_24485.csv'
     viirs_fire_df = pd.read_csv(os.path.join(path, 'VIIRS', viirs_fire_csv))
     viirs_fire_df['date_time'] = pd.to_datetime(viirs_fire_df['acq_date'])
 
-    date_to_find = pd.Timestamp(2016, 8, 22)
+    viirs_aod = viirs_aod_h5['All_Data']['VIIRS-Aeros-Opt-Thick-IP_All']['faot550'][:]
+    viirs_lat = viirs_geo_h5['All_Data']['VIIRS-MOD-GEO-TC_All']['Latitude'][:]
+    viirs_lon = viirs_geo_h5['All_Data']['VIIRS-MOD-GEO-TC_All']['Longitude'][:]
+    logger.info('...Loaded VIIRS data')
 
-    plume_roi_dict = identify(aod, lat, lon, date_to_find, viirs_fire_df)
+
+    # strip time for viirs fname
+    viirs_dt = datetime.strptime(re.search("[d][0-9]{8}[_][t][0-9]{6}", viirs_aod_fname).group(), 'd%Y%m%d_t%H%M%S')
+    date_to_find = pd.Timestamp(viirs_dt.year, viirs_dt.month, viirs_dt.day)
+
+    # need to resample VIIRS for the image processing parts
+    aod, lat, lon = resample(viirs_aod, viirs_lat, viirs_lon)
+    logger.info('...resampled VIIRS data')
+    t0 = time.clock()
+    plume_df = identify(aod, lat, lon, date_to_find, viirs_fire_df)
+    logger.info('...processed VIIRS.  Total time:' + str(time.clock() - t0))
+    logger.info('')
+
+
+    # # data setup for testing with MAIAC
+    # logger.info('Running test with MAIAC AOD...')
+    # maiac_aod_fname = 'MCD19A2.A2016235.h12v10.006.2018113135938.hdf'
+    # hdf_file = SD(os.path.join(path, 'maiac', maiac_aod_fname), SDC.READ)
+    #
+    # aod, lat, lon = read_modis_aod(hdf_file)
+    #
+    # # lets use viirs fires again
+    # viirs_fire_csv = 'fire_archive_V1_24485.csv'
+    # viirs_fire_df = pd.read_csv(os.path.join(path, 'VIIRS', viirs_fire_csv))
+    # viirs_fire_df['date_time'] = pd.to_datetime(viirs_fire_df['acq_date'])
+    #
+    # date_to_find = pd.Timestamp(2016, 8, 22)
+    #
+    # plume_df = identify(aod, lat, lon, date_to_find, viirs_fire_df)
+    #
+    # # TODO append filename / make new df for roi
 
     #
     # plt.close('all')
@@ -424,9 +479,11 @@ def main():
 
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.imshow(aod, cmap='gray')
-    for roi in plume_roi_dict:
-        d = plume_roi_dict[roi]
-        rect = mpatches.Rectangle((d['minc'], d['minr']), d['maxc'] - d['minc'], d['maxr'] - d['minr'],
+    for i, r in plume_df.iterrows():
+        rect = mpatches.Rectangle((r.plume_min_col,
+                                  r.plume_min_row),
+                                  r.plume_max_col - r.plume_min_col,
+                                  r.plume_max_row - r.plume_min_row,
                                   fill=False, edgecolor='red', linewidth=1)
         ax.add_patch(rect)
     plt.xticks([])
