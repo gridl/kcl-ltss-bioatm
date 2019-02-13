@@ -167,21 +167,21 @@ def locate_fire_in_image(fire_coords, lats, lons, rows, cols):
     return fire_rows, fire_cols
 
 
-def labelled_mask_set(aod):
+def generate_mask_dict(aod):
     """
-
     :param aod: the aod map
     :return: a set of masks based on different thresholds
     """
-    threshold_mask = {}
+    masks_dict = {}
     for t in THRESHOLD_SET:
-        threshold_mask[t] = aod > t
-    return threshold_mask
+        masks_dict[t] = aod > t
+    return masks_dict
 
 
 def extract_label(labelled_image, r, c):
     """
-    What does this do?
+    Find the nearest label in a labelled image for a given fire location
+    within some window
 
     :param labelled_image:
     :param r:
@@ -199,148 +199,192 @@ def extract_label(labelled_image, r, c):
         return None
 
 
-def plume_extent_assessment(threshold_masks, fire_rows, fire_cols):
+def find_plume_extents(masks_dict, fire_rows, fire_cols):
     """
-    What does this do?
+    For each fire the size in pixels of the most nearby (must be within
+     the maximum distance of pixels) labelled raised AOD is recorded.  This
+     is repeated across all different thresholds, from this we can see how the
+     size of the plume changes with the threshold.  This can be used in the next
+     step to determine the best background value.
 
-    :param threshold_masks:
-    :param fire_rows:
-    :param fire_cols:
+    :param masks_dict: masks derived from AODs at a range of different treshold values
+    :param fire_rows: row locations of aggregated fires
+    :param fire_cols: columne locations of aggregated fires
+    :return: the extent of the plume for a given fire across the various different thresholds
+    """
+    plume_extents = np.zeros((len(masks_dict), len(fire_cols)))
+
+    for mask_index, mask_key in enumerate(masks_dict):
+        labelled_mask = label(masks_dict[mask_key])
+        for fire_index, (r, c) in enumerate(zip(fire_rows, fire_cols)):
+            nearest_plume_label_for_fire = extract_label(labelled_mask, r, c)
+            if nearest_plume_label_for_fire is not None:
+                plume_size = np.sum(labelled_mask == nearest_plume_label_for_fire)
+                plume_extents[mask_index, fire_index] = plume_size
+    return plume_extents
+
+
+def find_threshold_index(plume_extents_across_all_fires):
+    """
+
+    :param plume_extents_across_all_fires:
     :return:
     """
-    plume_size_records = np.zeros((len(threshold_masks), len(fire_cols)))
+    best_threshold_index = []
+    for fire_id, extents in enumerate(plume_extents_across_all_fires.T):
 
-    for threshold_id, k in enumerate(threshold_masks):
-        labelled = label(threshold_masks[k])
-        for fire_id, (r, c) in enumerate(zip(fire_rows, fire_cols)):
-            nearest_label_for_fire = extract_label(labelled, r, c)
-            if nearest_label_for_fire is not None:
-                plume_size = np.sum(labelled == nearest_label_for_fire)
-                plume_size_records[threshold_id, fire_id] = plume_size
+        # make sure that all divide by zero instances are dealt with
+        # by setting to nan
+        null = extents[:-1] == 0
+        extent_ratios = extents[1:] / extents[:-1]
+        extent_ratios[null] = np.nan
 
-    return plume_size_records
-
-
-def find_threshold_index(plume_extent_records):
-    """
-
-    :param plume_extent_records:
-    :return:
-    """
-    threshold = []
-    for fire_id, e_r in enumerate(plume_extent_records.T):
-
-        null = e_r[:-1] == 0
-        ratios = e_r[1:] / e_r[:-1]
-        ratios[null] = np.nan
-
-        # if no plume seen at all then set to none
-        if np.all(np.isnan(ratios)):
-            threshold.append(None)
+        # if all threshold values are nan then no plume
+        if np.all(np.isnan(extent_ratios)):
+            best_threshold_index.append(None)
             continue
 
         # now lets asses the various ratios
-        argmax_ratio = np.nanargmax(ratios)
-        argmin_ratio = np.nanargmin(ratios)
+        argmax_ratio = np.nanargmax(extent_ratios)
+        argmin_ratio = np.nanargmin(extent_ratios)
 
         # if max is the first non-nan entry then assume no plume
-        if np.any(np.isnan(ratios)):
-            if argmax_ratio == np.where(np.isnan(ratios))[0][-1] + 1:
-                threshold.append(None)
+        if np.any(np.isnan(extent_ratios)):
+            if argmax_ratio == np.where(np.isnan(extent_ratios))[0][-1] + 1:
+                best_threshold_index.append(None)
                 continue
 
         # if max is the last entry then assume no plume
-        if argmax_ratio == ratios.size:
-            threshold.append(None)
+        if argmax_ratio == extent_ratios.size:
+            best_threshold_index.append(None)
 
         # if max ratio is not significantly larger than min ratio
-        elif ratios[argmax_ratio] / ratios[argmin_ratio] < MIN_RATIO_LIMIT:
-            threshold.append(None)
+        elif extent_ratios[argmax_ratio] / extent_ratios[argmin_ratio] < MIN_RATIO_LIMIT:
+            best_threshold_index.append(None)
 
         else:
-            threshold.append(THRESHOLD_SET[argmax_ratio])
+            best_threshold_index.append(argmax_ratio)
 
-    return threshold
+    return best_threshold_index
 
 
-def extract_plume_roi(cluster_specific_threshold_index, threshold_masks,
-                     fire_rows, fire_cols, lat, lon, aod):
+def find_plume_mask(threshold_masks, index, fire_rows, fire_cols, fire_id):
+
+    mask = threshold_masks[THRESHOLD_SET[index]]
+
+    # label the two masks
+    labelled_mask = label(mask)
+
+    # find all labels associated with a fire
+    all_plume_labels = []
+    for r, c in zip(fire_rows, fire_cols):
+        nearest_label_for_fire = extract_label(labelled_mask, r, c)
+
+        if nearest_label_for_fire is not None:
+            all_plume_labels.append(nearest_label_for_fire)
+        else:
+            all_plume_labels.append(None)
+
+    # check if label is duplicated, and don't add if so
+    label_for_fire = all_plume_labels[fire_id]
+    appearences = np.sum(all_plume_labels == label_for_fire)
+    if appearences >= 2:
+        return None, None
+
+    # Check all regions in the image
+    for region in regionprops(labelled_mask):
+        if region.label == label_for_fire:
+
+            # get rid of small plumes as likely not of use
+            if region.area < MIN_PLUME_PIXELS:
+                continue
+
+            # first get the plume mask
+            return labelled_mask == label_for_fire, region
+
+    # if we get there then no plume associated with fire
+    return None, None
+
+
+def extract_plume_roi(best_threshold_index, threshold_masks,
+                      fire_rows, fire_cols, lat, lon, aod):
+    """
+
+    :param best_threshold_index:
+    :param threshold_masks:
+    :param fire_rows:
+    :param fire_cols:
+    :param lat:
+    :param lon:
+    :param aod:
+    :return:
+    """
     aod_df_list = []
     hull_lats = []
     hull_lons = []
     hull_ids = []
-    id = 0
+    id = int(0)
 
-    for fire_id, t in enumerate(cluster_specific_threshold_index):
+    for fire_id, threshold_index in enumerate(best_threshold_index):
 
-        if t == None:
+        # if no threshold index indentified then move on
+        if threshold_index == None:
             continue
 
-        best_mask_for_fire_cluster = threshold_masks[t]
-        labelled_mask = label(best_mask_for_fire_cluster)
+        # find the plume associated with the fire
+        plume_mask_a, region_a = find_plume_mask(threshold_masks, threshold_index, fire_rows, fire_cols, fire_id)
+        plume_mask_b, region_b = find_plume_mask(threshold_masks, threshold_index-1, fire_rows, fire_cols, fire_id)
 
-        # find all labels associated with a fire
-        all_plume_labels = []
-        for r, c in zip(fire_rows, fire_cols):
-            nearest_label_for_fire = extract_label(labelled_mask, r, c)
-
-            if nearest_label_for_fire is not None:
-                all_plume_labels.append(nearest_label_for_fire)
+        # select the right plume mask
+        if plume_mask_a is None and plume_mask_b is None:
+            continue
+        if plume_mask_a is not None and plume_mask_b is not None:
+            if np.sum(plume_mask_a) > np.sum(plume_mask_b):
+                plume_mask = plume_mask_a
+                region = region_a
             else:
-                all_plume_labels.append(None)
+                plume_mask = plume_mask_b
+                region = region_b
+        elif plume_mask_a is None:
+            plume_mask = plume_mask_b
+            region = region_b
+        else:
+            plume_mask = plume_mask_a
+            region = region_a
 
 
-        # check if label is duplicated, and don't add if so
-        label_for_fire = all_plume_labels[fire_id]
-        appearences = np.sum(all_plume_labels == label_for_fire)
-        if appearences > 2:
-            continue
+        # now get the AOD
+        plume_aod = aod[plume_mask]
+        aod_mean = np.mean(plume_aod)
+        aod_sd = np.std(plume_aod)
 
-        # Check all regions in the image
-        for region in regionprops(labelled_mask):
-            if region.label == label_for_fire:
+        # get bounding coordinates of the plume (for later use in Shapely to assign fires)
+        y, x = np.where(plume_mask == 1)
+        points = np.array(list(zip(y, x)))
+        hull = ConvexHull(points)
+        hull_indicies_y, hull_indicies_x = points[hull.vertices, 0], points[hull.vertices, 1]
+        hull_lats.extend(lat[hull_indicies_y, hull_indicies_x])
+        hull_lons.extend(lon[hull_indicies_y, hull_indicies_x])
+        hull_ids.extend(np.ones(hull_indicies_y.size) * id)
 
-                # get rid of small plumes as likely not of use
-                if region.area < MIN_PLUME_PIXELS:
-                    continue
+        # get the bounding box
+        min_r, min_c, max_r, max_c = region.bbox
 
-                # first get the plume mask
-                plume_mask = labelled_mask == label_for_fire
+        # make the aod dataframe
+        dd = {'plume_pixel_extent': int(region.area.copy()),
+              'plume_min_row': min_r,
+              'plume_max_row': max_r,
+              'plume_min_col': min_c,
+              'plume_max_col': max_c,
+              'plume_aod_mean': aod_mean,
+              'plume_aod_sd': aod_sd,
+              'bg_aod_level': threshold_index,
+              'id': id}
+        aod_df = pd.DataFrame()
+        aod_df = aod_df.append(dd, ignore_index=True)
+        aod_df_list.append(aod_df)
 
-                # now get the AOD
-                plume_aod = aod[plume_mask]
-                aod_mean = np.mean(plume_aod)
-                aod_sd = np.std(plume_aod)
-
-                # get bounding coordinates of the plume (for later use in Shapely to assign fires)
-                y, x = np.where(plume_mask == 1)
-                points = np.array(list(zip(y, x)))
-                hull = ConvexHull(points)
-                hull_indicies_y, hull_indicies_x = points[hull.vertices, 0], points[hull.vertices, 1]
-                hull_lats.extend(lat[hull_indicies_y, hull_indicies_x])
-                hull_lons.extend(lon[hull_indicies_y, hull_indicies_x])
-                hull_ids.extend(np.ones(x.size) * id)
-
-                # get the bounding box
-                min_r, min_c, max_r, max_c = region.bbox
-
-                # make the aod dataframe
-                aod_df = pd.DataFrame()
-                area = int(region.area.copy())
-                aod_df['plume_pixel_extent'] = area
-                aod_df['plume_min_row'] = min_r
-                aod_df['plume_max_row'] = max_r
-                aod_df['plume_min_col'] = min_c
-                aod_df['plume_max_col'] = max_c
-                aod_df['plume_aod_mean'] = aod_mean
-                aod_df['plume_aod_sd'] = aod_sd
-                aod_df['bg_aod_level'] = t
-                aod_df['plume_pixel_extent'] = area
-                aod_df['id'] = id
-
-                aod_df_list.append(aod_df)
-
-        # update the id
+        # update the id if we find a region with a fire
         id += 1
 
     aod_scene_df = pd.concat(aod_df_list)
@@ -384,19 +428,19 @@ def identify(aod, lat, lon, date_to_find, fire_df):
     logger.info('...assigned fires to image grid')
 
     # setup the plume masks set over the defined threshold
-    threshold_masks = labelled_mask_set(aod)
+    masks_dict = generate_mask_dict(aod)
 
     # iteratve over the set of plume masks and establish plume
     # extents for all fire clusters over the various thresholds
-    plume_extents_for_thresholds = plume_extent_assessment(threshold_masks, fire_rows, fire_cols)
+    plume_extents_across_thresholds = find_plume_extents(masks_dict, fire_rows, fire_cols)
 
     # find  threshold index for each fire cluster that can be used to
     # index into the masks and the specific threshold used to generate
     # the mask
-    cluster_specific_thresholds = find_threshold_index(plume_extents_for_thresholds)
+    threshold_index_for_fires = find_threshold_index(plume_extents_across_thresholds)
 
     #
-    aod_df, extent_df = extract_plume_roi(cluster_specific_thresholds, threshold_masks,
+    aod_df, extent_df = extract_plume_roi(threshold_index_for_fires, masks_dict,
                                           fire_rows, fire_cols, lat, lon, aod)
 
     return aod_df, extent_df
@@ -413,7 +457,9 @@ def main():
 
     # PIXEL_SIZE = 750  # size of resampled pixels in m for VIIRS data
     # FILL_VALUE = np.nan  # resampling fill value
-    path = '/Volumes/INTENSO/kcl-ltss-bioatm/raw/plume_id_test'
+    #path = '/Volumes/INTENSO/kcl-ltss-bioatm/raw/plume_id_test'
+    path = '/Users/danielfisher/Projects/kcl-ltss-bioatm/data/raw/plume_id_test'
+
     #
     # def resample(img, lat, lon, null_value=0):
     #     resampler = tools.utm_resampler(lat, lon, PIXEL_SIZE)
@@ -464,7 +510,7 @@ def main():
     # data setup for testing with MAIAC
     logger.info('Running test with MAIAC AOD...')
     maiac_aod_fname = 'MCD19A2.A2016235.h12v10.006.2018113135938.hdf'
-    maiac_output_fname = maiac_aod_fname.split('.')[:-1]
+    maiac_output_fname = maiac_aod_fname[:-4]
     hdf_file = SD(os.path.join(path, 'maiac', maiac_aod_fname), SDC.READ)
 
     aod, lat, lon = read_modis_aod(hdf_file)
