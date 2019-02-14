@@ -4,9 +4,9 @@ Contains the various file paths for the Python scripts
 
 import os
 
-#root_path = '/Volumes/INTENSO/kcl-ltss-bioatm'
+root_path = '/Volumes/INTENSO/kcl-ltss-bioatm'
 #root_path = '/home/users/dnfisher/data/kcl-ltss-bioatm'
-root_path = '/Users/dnf/Projects/kcl-ltss-bioatm/data'
+#root_path = '/Users/dnf/Projects/kcl-ltss-bioatm/data'
 
 
 # paths to raw data
@@ -26,7 +26,7 @@ path_to_viirs_ml_reprojected_h5 = os.path.join(root_path, 'raw/ml_data_viirs/h5'
 path_to_viirs_ml_plume_masks = os.path.join(root_path, 'raw/ml_data_viirs/mask_full_plume')
 
 # path to fire data
-path_to_fire_df = os.path.join(root_path, 'raw/fires/fire_archive_V1_24485.csv')
+path_to_fire = os.path.join(root_path, 'raw/fires')
 
 # data in form suitable for models
 path_to_model_data_folder = os.path.join(root_path, 'interim/model_input')
