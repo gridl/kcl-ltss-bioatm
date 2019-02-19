@@ -28,11 +28,12 @@ def construct_dist_matrix():
 # Constants
 MIN_FRP = 10  # Only fires greater than 10 MW are considered in clustering
 CLUSTER_DIST = 10  # fires less than this distance apart (in KM) are clustered
-THRESHOLD_SET = np.abs(np.arange(0, 0.5, 0.02) - 0.5)
-MIN_RATIO_LIMIT = 5
+THRESHOLD_SET = np.abs(np.arange(0, 1, 0.02) - 1)
+MIN_RATIO_LIMIT = 5  # extent ratio, use to assess if the min extent ratio is much larger
 P_ID_WIN_SIZE = 15  # plume identification window size in pix (half window e.g. for 21 use 10)
 DISTANCE_MATRIX = construct_dist_matrix()  # used to determine the distance of a fire from a plume in pixels
 MIN_PLUME_PIXELS = 50
+MAX_PLUME_PIXELS = 50000
 
 def read_modis_aod(hdf_file):
     # Read dataset.
@@ -249,7 +250,6 @@ def find_threshold_index(plume_extents_across_all_fires):
 
         # now lets asses the various ratios
         argmax_ratio = np.nanargmax(extent_ratios)
-        argmin_ratio = np.nanargmin(extent_ratios)
 
         # if max is the first non-nan entry then assume no plume
         if np.any(np.isnan(extent_ratios)):
@@ -259,10 +259,6 @@ def find_threshold_index(plume_extents_across_all_fires):
 
         # if max is the last entry then assume no plume
         if argmax_ratio == extent_ratios.size:
-            best_threshold_index.append(None)
-
-        # if max ratio is not significantly larger than min ratio
-        elif extent_ratios[argmax_ratio] / extent_ratios[argmin_ratio] < MIN_RATIO_LIMIT:
             best_threshold_index.append(None)
 
         else:
@@ -291,7 +287,7 @@ def find_plume_mask(threshold_masks, index, fire_rows, fire_cols, fire_id):
     # check if label is duplicated, and don't add if so
     label_for_fire = all_plume_labels[fire_id]
     appearences = np.sum(all_plume_labels == label_for_fire)
-    if appearences >= 2:
+    if appearences >= 3:
         return None, None
 
     # Check all regions in the image
@@ -300,6 +296,10 @@ def find_plume_mask(threshold_masks, index, fire_rows, fire_cols, fire_id):
 
             # get rid of small plumes as likely not of use
             if region.area < MIN_PLUME_PIXELS:
+                continue
+
+            # get rid of very large plumes as likely not of use
+            if region.area > MAX_PLUME_PIXELS:
                 continue
 
             # first get the plume mask
@@ -463,15 +463,18 @@ def main():
 
     # setup paths
     # TODO update when all MAIAC data has been pulled
-    maiac_path = '/Users/dnf/Downloads/maiac'
-    log_path = '/Volumes/INTENSO/kcl-ltss-bioatm/raw/plume_identification/logs'
-    aod_df_outpath = '/Volumes/INTENSO/kcl-ltss-bioatm/raw/plume_identification/dataframes/aod'
-    hull_df_outpath = '/Volumes/INTENSO/kcl-ltss-bioatm/raw/plume_identification/dataframes/hull'
-    plot_outpath = '/Volumes/INTENSO/kcl-ltss-bioatm/raw/plume_identification/plots'
+    #root = '/Volumes/INTENSO/kcl-ltss-bioatm/'
+    root = '/Users/danielfisher/Projects/kcl-ltss-bioatm/data/'
+    maiac_path = os.path.join(root, 'raw/plume_identification/maiac')
+    log_path = os.path.join(root , 'raw/plume_identification/logs')
+    aod_df_outpath = os.path.join(root, 'raw/plume_identification/dataframes/aod')
+    hull_df_outpath = os.path.join(root, 'raw/plume_identification/dataframes/hull')
+    plot_outpath = os.path.join(root, 'raw/plume_identification/plots')
 
     # load in VIIRS fires for plume detection purposes
     viirs_fire_csv_fname = 'viirs_americas_201707_201709.csv'
-    viirs_fire_df = pd.read_csv(os.path.join(filepaths.path_to_fire, viirs_fire_csv_fname))
+    fire_path = os.path.join(root, 'raw/fires')
+    viirs_fire_df = pd.read_csv(os.path.join(fire_path, viirs_fire_csv_fname))
     viirs_fire_df['date_time'] = pd.to_datetime(viirs_fire_df['acq_date'])
 
     for maiac_fname in os.listdir(maiac_path):
@@ -515,7 +518,7 @@ def main():
             plot_fname = maiac_output_fname + '_plot.png'
 
             fig, ax = plt.subplots(figsize=(10, 6))
-            ax.imshow(aod, cmap='gray')
+            ax.imshow(aod, cmap='gray', interpolation='None')
             for i, r in aod_df.iterrows():
                 rect = mpatches.Rectangle((r.plume_min_col,
                                            r.plume_min_row),
