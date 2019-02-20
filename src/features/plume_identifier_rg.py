@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import pyproj
 from skimage.measure import label, regionprops
+from skimage.morphology import binary_erosion, binary_dilation
 from scipy.spatial import ConvexHull
 from sklearn.cluster import DBSCAN
 
@@ -28,12 +29,13 @@ def construct_dist_matrix():
 # Constants
 MIN_FRP = 10  # Only fires greater than 10 MW are considered in clustering
 CLUSTER_DIST = 10  # fires less than this distance apart (in KM) are clustered
-THRESHOLD_SET = np.abs(np.arange(0, 1, 0.02) - 1)
+THRESHOLD_SET = np.abs(np.arange(0, 1, 0.01) - 1)
 MIN_RATIO_LIMIT = 5  # extent ratio, use to assess if the min extent ratio is much larger
 P_ID_WIN_SIZE = 15  # plume identification window size in pix (half window e.g. for 21 use 10)
 DISTANCE_MATRIX = construct_dist_matrix()  # used to determine the distance of a fire from a plume in pixels
 MIN_PLUME_PIXELS = 50
 MAX_PLUME_PIXELS = 50000
+SIDE_RATIO = 5  # one sidelength must be three times longer than other
 
 def read_modis_aod(hdf_file):
     # Read dataset.
@@ -178,7 +180,11 @@ def generate_mask_dict(aod):
     """
     masks_dict = {}
     for t in THRESHOLD_SET:
-        masks_dict[t] = aod > t
+        mask = aod > t
+        # get rid of singleton pixels
+        mask = binary_erosion(mask)
+        mask = binary_dilation(mask)
+        masks_dict[t] = mask
     return masks_dict
 
 
@@ -284,11 +290,11 @@ def find_plume_mask(threshold_masks, index, fire_rows, fire_cols, fire_id):
         else:
             all_plume_labels.append(None)
 
-    # check if label is duplicated, and don't add if so
+    # check if label is duplicated, merge if so?
     label_for_fire = all_plume_labels[fire_id]
-    appearences = np.sum(all_plume_labels == label_for_fire)
-    if appearences >= 3:
-        return None, None
+    # appearences = np.sum(all_plume_labels == label_for_fire)
+    # if appearences >= 2:
+    #     return None, None
 
     # Check all regions in the image
     for region in regionprops(labelled_mask):
@@ -302,8 +308,28 @@ def find_plume_mask(threshold_masks, index, fire_rows, fire_cols, fire_id):
             if region.area > MAX_PLUME_PIXELS:
                 continue
 
+            # get rid of squarish regions and will not have a strong plume feature
+            plume_mask = labelled_mask == label_for_fire
+            yx = np.where(plume_mask == 1)
+            eigvals, eigvecs = np.linalg.eig(np.cov(yx))
+
+            center = np.mean(yx, axis=-1)
+            dists = []
+            for val, vec in zip(eigvals, eigvecs.T):
+                v1, v2 = np.vstack((center + val * vec, center - val * vec))
+                dists.append(np.linalg.norm(v1-v2))
+
+            if dists[0] > dists[1]:
+                if dists[0] / dists[1] < SIDE_RATIO:
+                    continue
+            else:
+                if dists[1] / dists[0] < SIDE_RATIO:
+                    continue
+
+
+
             # first get the plume mask
-            return labelled_mask == label_for_fire, region
+            return plume_mask, region
 
     # if we get there then no plume associated with fire
     return None, None
@@ -398,6 +424,8 @@ def extract_plume_roi(best_threshold_index, threshold_masks,
                ('hull_lons', hull_lons)]
     extent_scene_df = pd.DataFrame.from_items(extents)
 
+
+    # TODO Drop duplicates in AOD dataframe and do the same in extent
     return aod_scene_df, extent_scene_df
 
 
@@ -463,8 +491,8 @@ def main():
 
     # setup paths
     # TODO update when all MAIAC data has been pulled
-    #root = '/Volumes/INTENSO/kcl-ltss-bioatm/'
-    root = '/Users/danielfisher/Projects/kcl-ltss-bioatm/data/'
+    root = '/Volumes/INTENSO/kcl-ltss-bioatm/'
+    #root = '/Users/danielfisher/Projects/kcl-ltss-bioatm/data/'
     maiac_path = os.path.join(root, 'raw/plume_identification/maiac')
     log_path = os.path.join(root , 'raw/plume_identification/logs')
     aod_df_outpath = os.path.join(root, 'raw/plume_identification/dataframes/aod')
@@ -482,7 +510,6 @@ def main():
         if 'MCD19A2.A2017255.h12v09.006.2018119143112' not in maiac_fname:
             continue
 
-
         if '.hdf' not in maiac_fname:
             continue
 
@@ -492,6 +519,7 @@ def main():
         hull_fname = maiac_output_fname + '_extent.csv'
 
         # check if file already processed
+        # TODO make this work, currently not readnig in as it should
         try:
             with open(os.path.join(log_path, 'maiac.log'), 'a+') as log:
                 if maiac_fname in log.read():
