@@ -33,8 +33,8 @@ THRESHOLD_SET = np.abs(np.arange(0, 1, 0.01) - 1)
 MIN_RATIO_LIMIT = 5  # extent ratio, use to assess if the min extent ratio is much larger
 P_ID_WIN_SIZE = 15  # plume identification window size in pix (half window e.g. for 21 use 10)
 DISTANCE_MATRIX = construct_dist_matrix()  # used to determine the distance of a fire from a plume in pixels
-MIN_PLUME_PIXELS = 50
-MAX_PLUME_PIXELS = 50000
+MIN_PLUME_PIXELS = 200
+MAX_PLUME_PIXELS = 25000
 SIDE_RATIO = 5  # one sidelength must be three times longer than other
 
 def read_modis_aod(hdf_file):
@@ -326,8 +326,6 @@ def find_plume_mask(threshold_masks, index, fire_rows, fire_cols, fire_id):
                 if dists[1] / dists[0] < SIDE_RATIO:
                     continue
 
-
-
             # first get the plume mask
             return plume_mask, region
 
@@ -351,6 +349,8 @@ def extract_plume_roi(best_threshold_index, threshold_masks,
     aod_df_list = []
     hull_lats = []
     hull_lons = []
+    hull_x_coords = []
+    hull_y_coords = []
     hull_ids = []
     id = int(0)
 
@@ -394,6 +394,8 @@ def extract_plume_roi(best_threshold_index, threshold_masks,
         hull_indicies_y, hull_indicies_x = points[hull.vertices, 0], points[hull.vertices, 1]
         hull_lats.extend(lat[hull_indicies_y, hull_indicies_x])
         hull_lons.extend(lon[hull_indicies_y, hull_indicies_x])
+        hull_x_coords.extend(hull_indicies_x)
+        hull_y_coords.extend(hull_indicies_y)
         hull_ids.extend(np.ones(hull_indicies_y.size) * id)
 
         # get the bounding box
@@ -421,11 +423,16 @@ def extract_plume_roi(best_threshold_index, threshold_masks,
     # Create the extent dataframe
     extents = [('id', hull_ids),
                ('hull_lats', hull_lats),
-               ('hull_lons', hull_lons)]
+               ('hull_lons', hull_lons),
+               ('hull_x', hull_x_coords),
+               ('hull_y', hull_y_coords),
+               ]
     extent_scene_df = pd.DataFrame.from_items(extents)
 
-
     # TODO Drop duplicates in AOD dataframe and do the same in extent
+    aod_scene_df = aod_scene_df.set_index('id').drop_duplicates().reset_index()
+    extent_scene_df = extent_scene_df[extent_scene_df.id.isin(aod_scene_df.id)]
+
     return aod_scene_df, extent_scene_df
 
 
@@ -507,8 +514,8 @@ def main():
 
     for maiac_fname in os.listdir(maiac_path):
 
-        if 'MCD19A2.A2017255.h12v09.006.2018119143112' not in maiac_fname:
-            continue
+        # if 'MCD19A2.A2017255.h12v09.006.2018119143112' not in maiac_fname:
+        #     continue
 
         if '.hdf' not in maiac_fname:
             continue
@@ -521,14 +528,15 @@ def main():
         # check if file already processed
         # TODO make this work, currently not readnig in as it should
         try:
-            with open(os.path.join(log_path, 'maiac.log'), 'a+') as log:
-                if maiac_fname in log.read():
+            with open(os.path.join(log_path, 'maiac_log.txt')) as log:
+                if maiac_fname+'\n' in log.read():
                     logger.info(maiac_output_fname + ' already processed, continuing...')
                     continue
                 else:
-                    log.write(maiac_fname+'\n')
+                    with open(os.path.join(log_path, 'maiac_log.txt'), 'a+') as log:
+                        log.write(maiac_fname + '\n')
         except IOError:
-            with open(os.path.join(log_path, 'maiac.log'), 'w+') as log:
+            with open(os.path.join(log_path, 'maiac_log.txt'), 'w+') as log:
                 log.write(maiac_fname+'\n')
 
 
