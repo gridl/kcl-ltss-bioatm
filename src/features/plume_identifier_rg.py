@@ -498,8 +498,9 @@ def main():
 
     # setup paths
     # TODO update when all MAIAC data has been pulled
-    root = '/Volumes/INTENSO/kcl-ltss-bioatm/'
+    #root = '/Volumes/INTENSO/kcl-ltss-bioatm/'
     #root = '/Users/danielfisher/Projects/kcl-ltss-bioatm/data/'
+    root = '/Users/dnf/Projects/kcl-ltss-bioatm/data'
     maiac_path = os.path.join(root, 'raw/plume_identification/maiac')
     log_path = os.path.join(root , 'raw/plume_identification/logs')
     aod_df_outpath = os.path.join(root, 'raw/plume_identification/dataframes/aod')
@@ -526,7 +527,6 @@ def main():
         hull_fname = maiac_output_fname + '_extent.csv'
 
         # check if file already processed
-        # TODO make this work, currently not readnig in as it should
         try:
             with open(os.path.join(log_path, 'maiac_log.txt')) as log:
                 if maiac_fname+'\n' in log.read():
