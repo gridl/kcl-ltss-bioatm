@@ -115,7 +115,8 @@ def display_image(im, hull_x, hull_y):
 def main():
     global keep
 
-    root = '/Users/dnf/Projects/kcl-ltss-bioatm/data'
+    #root = '/Users/dnf/Projects/kcl-ltss-bioatm/data'
+    root = '/Volumes/INTENSO/kcl-ltss-bioatm'
     maiac_path = os.path.join(root, 'raw/plume_identification/maiac')
     hull_df_path = os.path.join(root, 'raw/plume_identification/dataframes/full/hull')
     aod_df_path = os.path.join(root, 'raw/plume_identification/dataframes/full/aod')
