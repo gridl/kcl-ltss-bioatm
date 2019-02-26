@@ -185,14 +185,5 @@ def main():
             hull_df.to_csv(os.path.join(hull_df_outpath, hull_df_fname), index=False)
 
 
-
-
-
-    # save plume pngs
-    # save plume coords
-    # save plume filenames
-    # save frp in bounding box
-    pass
-
 if __name__ == "__main__":
     main()
