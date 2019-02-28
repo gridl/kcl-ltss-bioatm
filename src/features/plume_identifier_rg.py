@@ -29,13 +29,15 @@ def construct_dist_matrix():
 # Constants
 MIN_FRP = 10  # Only fires greater than 10 MW are considered in clustering
 CLUSTER_DIST = 10  # fires less than this distance apart (in KM) are clustered
-THRESHOLD_SET = np.abs(np.arange(0, 1, 0.01) - 1)
+THRESHOLD_SET = np.abs(np.arange(0, 1, 0.02) - 1)
 MIN_RATIO_LIMIT = 5  # extent ratio, use to assess if the min extent ratio is much larger
 P_ID_WIN_SIZE = 15  # plume identification window size in pix (half window e.g. for 21 use 10)
 DISTANCE_MATRIX = construct_dist_matrix()  # used to determine the distance of a fire from a plume in pixels
-MIN_PLUME_PIXELS = 200
-MAX_PLUME_PIXELS = 25000
+MIN_PLUME_PIXELS = 100
+MAX_PLUME_PIXELS = 2000
 SIDE_RATIO = 5  # one sidelength must be three times longer than other
+MAX_LIM = 0.1  # one AOD pixel in the plume must be at least this high
+
 
 def read_modis_aod(hdf_file):
     # Read dataset.
@@ -275,6 +277,7 @@ def find_threshold_index(plume_extents_across_all_fires):
 
 def find_plume_mask(threshold_masks, index, fire_rows, fire_cols, fire_id):
 
+
     mask = threshold_masks[THRESHOLD_SET[index]]
 
     # label the two masks
@@ -364,11 +367,11 @@ def extract_plume_roi(best_threshold_index, threshold_masks,
         plume_mask_a, region_a = find_plume_mask(threshold_masks, threshold_index, fire_rows, fire_cols, fire_id)
         plume_mask_b, region_b = find_plume_mask(threshold_masks, threshold_index-1, fire_rows, fire_cols, fire_id)
 
-        # select the right plume mask
+        # select the smaller plume mask
         if plume_mask_a is None and plume_mask_b is None:
             continue
         if plume_mask_a is not None and plume_mask_b is not None:
-            if np.sum(plume_mask_a) > np.sum(plume_mask_b):
+            if np.sum(plume_mask_a) < np.sum(plume_mask_b):
                 plume_mask = plume_mask_a
                 region = region_a
             else:
@@ -381,11 +384,15 @@ def extract_plume_roi(best_threshold_index, threshold_masks,
             plume_mask = plume_mask_a
             region = region_a
 
-
         # now get the AOD
         plume_aod = aod[plume_mask]
         aod_mean = np.mean(plume_aod)
         aod_sd = np.std(plume_aod)
+        aod_max = np.max(plume_aod)
+
+        # if plume AOD is less than needed max, then do not keep
+        if aod_max < MAX_LIM:
+            continue
 
         # get bounding coordinates of the plume (for later use in Shapely to assign fires)
         y, x = np.where(plume_mask == 1)
@@ -498,13 +505,13 @@ def main():
 
     # setup paths
     # TODO update when all MAIAC data has been pulled
-    #root = '/Volumes/INTENSO/kcl-ltss-bioatm/'
+    root = '/Volumes/INTENSO/kcl-ltss-bioatm/'
     #root = '/Users/danielfisher/Projects/kcl-ltss-bioatm/data/'
-    root = '/Users/dnf/Projects/kcl-ltss-bioatm/data'
+    #root = '/Users/dnf/Projects/kcl-ltss-bioatm/data'
     maiac_path = os.path.join(root, 'raw/plume_identification/maiac')
     log_path = os.path.join(root , 'raw/plume_identification/logs')
-    aod_df_outpath = os.path.join(root, 'raw/plume_identification/dataframes/aod')
-    hull_df_outpath = os.path.join(root, 'raw/plume_identification/dataframes/hull')
+    aod_df_outpath = os.path.join(root, 'raw/plume_identification/dataframes/full/aod')
+    hull_df_outpath = os.path.join(root, 'raw/plume_identification/dataframes/full/hull')
     plot_outpath = os.path.join(root, 'raw/plume_identification/plots')
 
     # load in VIIRS fires for plume detection purposes
@@ -517,6 +524,8 @@ def main():
 
         # if 'MCD19A2.A2017255.h12v09.006.2018119143112' not in maiac_fname:
         #     continue
+        # MCD19A2.A2017210.h12v11.006.2018117231329
+        # 'MCD19A2.A2017255.h12v09.006.2018119143112'
 
         if '.hdf' not in maiac_fname:
             continue

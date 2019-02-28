@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import pyproj
 import pandas as pd
 from pyhdf.SD import SD, SDC
+from scipy.spatial import Delaunay
 
 
 log_fmt = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -66,7 +67,7 @@ def read_modis_aod(hdf_file):
 
 
 def subset_plume(aod, plume_df):
-    buffer = 5
+    buffer = 40
 
     min_x = plume_df.hull_x.min()
     max_x = plume_df.hull_x.max()
@@ -95,6 +96,37 @@ def subset_plume(aod, plume_df):
 
     return aod[min_y:max_y, min_x:max_x], hull_x, hull_y
 
+
+def in_hull(p, hull):
+    """
+    Test if points in `p` are in `hull`
+
+    `p` should be a `NxK` coordinates of `N` points in `K` dimensions
+    `hull` is either a scipy.spatial.Delaunay object or the `MxK` array of the
+    coordinates of `M` points in `K`dimensions for which Delaunay triangulation
+    will be computed
+    """
+    if not isinstance(hull,Delaunay):
+        hull = Delaunay(hull)
+    return hull.find_simplex(p)>=0
+
+
+def find_plume_aod(plume_image, hull_x, hull_y):
+
+    y = np.arange(plume_image.shape[0])
+    x = np.arange(plume_image.shape[1])
+    xx, yy = np.meshgrid(y, x)
+    xx = xx.flatten()
+    yy = yy.flatten()
+
+    im_coords = np.vstack((xx, yy)).T
+    hull = np.vstack((hull_x, hull_y)).T
+
+    mask = in_hull(im_coords, hull)
+
+    plume_aod = plume_image[yy[mask], xx[mask]]
+    return plume_aod
+
 def press(event):
     global keep
     if event.key == '1':
@@ -104,11 +136,13 @@ def press(event):
         keep.append(False)
         plt.close()
 
-def display_image(im, hull_x, hull_y):
-    fig, ax = plt.subplots()
+def display_image(im, hull_x, hull_y, plume_aod):
+    fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(12,5))
     fig.canvas.mpl_connect('key_press_event', press)
-    ax.imshow(im)
-    ax.plot(hull_x, hull_y, 'r--', lw=2)
+    ax0_im = ax0.imshow(im)
+    plt.colorbar(ax=ax0, mappable=ax0_im)
+    ax0.plot(hull_x, hull_y, 'r--', lw=2)
+    ax1.hist(plume_aod, bins=np.arange(0, 1, 0.02))
     plt.show()
 
 
@@ -166,8 +200,16 @@ def main():
             # subset to plume and adjust hull
             plume_image, hull_x, hull_y = subset_plume(aod, plume_df)
 
+            # get aod for points inside the convex hull
+            in_plume_aod = find_plume_aod(plume_image, hull_x, hull_y)
+
+            # check if largest bin is 0, if so dont bother checking it
+            h = np.histogram(in_plume_aod, bins=np.arange(0, 1, 0.02))
+            if np.argmax((h[0])) == 0:
+                continue
+
             # display
-            display_image(plume_image, hull_x, hull_y)
+            display_image(plume_image, hull_x, hull_y, in_plume_aod)
 
             # if keep
             if keep[0]:
