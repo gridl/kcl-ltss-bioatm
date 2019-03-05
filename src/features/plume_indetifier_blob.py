@@ -9,54 +9,7 @@ from skimage.feature import blob_dog, blob_log, blob_doh
 from skimage.color import rgb2gray
 import matplotlib.pyplot as plt
 
-
-def read_modis_aod(hdf_file):
-    # Read dataset.
-    aod = hdf_file.select('Optical_Depth_055')[0, :, :] * 0.001  # aod scaling factor
-
-
-    aod[aod < 0] = 0  # just get rid of the filled values for now
-
-    # Read global attribute.
-    fattrs = hdf_file.attributes(full=1)
-    ga = fattrs["StructMetadata.0"]
-    gridmeta = ga[0]
-
-    # Construct the grid.  The needed information is in a global attribute
-    # called 'StructMetadata.0'.  Use regular expressions to tease out the
-    # extents of the grid.
-    ul_regex = re.compile(r'''UpperLeftPointMtrs=\(
-                                      (?P<upper_left_x>[+-]?\d+\.\d+)
-                                      ,
-                                      (?P<upper_left_y>[+-]?\d+\.\d+)
-                                      \)''', re.VERBOSE)
-    match = ul_regex.search(gridmeta)
-    x0 = np.float(match.group('upper_left_x'))
-    y0 = np.float(match.group('upper_left_y'))
-
-    lr_regex = re.compile(r'''LowerRightMtrs=\(
-                                      (?P<lower_right_x>[+-]?\d+\.\d+)
-                                      ,
-                                      (?P<lower_right_y>[+-]?\d+\.\d+)
-                                      \)''', re.VERBOSE)
-    match = lr_regex.search(gridmeta)
-    x1 = np.float(match.group('lower_right_x'))
-    y1 = np.float(match.group('lower_right_y'))
-    ny, nx = aod.shape
-    xinc = (x1 - x0) / nx
-    yinc = (y1 - y0) / ny
-
-    x = np.linspace(x0, x0 + xinc * nx, nx)
-    y = np.linspace(y0, y0 + yinc * ny, ny)
-    xv, yv = np.meshgrid(x, y)
-
-    # In basemap, the sinusoidal projection is global, so we won't use it.
-    # Instead we'll convert the grid back to lat/lons.
-    sinu = pyproj.Proj("+proj=sinu +R=6371007.181 +nadgrids=@null +wktext")
-    wgs84 = pyproj.Proj("+init=EPSG:4326")
-    lon, lat = pyproj.transform(sinu, wgs84, xv, yv)
-
-    return aod, lat, lon
+import src.features.tools
 
 
 def main():
@@ -67,12 +20,12 @@ def main():
 
     # setup paths
     # TODO update when all MAIAC data has been pulled
-    root = '/Volumes/INTENSO/kcl-ltss-bioatm/'
+    root = '/Users/danielfisher/Projects/kcl-ltss-bioatm/data'
     maiac_path = os.path.join(root, 'raw/plume_identification/maiac')
 
     for maiac_fname in os.listdir(maiac_path):
 
-        if 'MCD19A2.A2017255.h12v09.006.2018119143112' not in maiac_fname:
+        if 'MCD19A2.A2017210.h12v11.006.2018117231329' not in maiac_fname:
             continue
         # MCD19A2.A2017210.h12v11.006.2018117231329
         # 'MCD19A2.A2017255.h12v09.006.2018119143112'
@@ -82,7 +35,7 @@ def main():
 
         hdf_file = SD(os.path.join(maiac_path, maiac_fname), SDC.READ)
 
-        aod, lat, lon = read_modis_aod(hdf_file)
+        aod, lat, lon = tools.read_modis_aod(hdf_file)
 
         blobs_log = blob_log(aod, max_sigma=30, num_sigma=10, threshold=.1)
 
