@@ -2,12 +2,17 @@ import os
 import re
 import logging
 
+import matplotlib
+matplotlib.use("TKAgg")
+
 import numpy as np
 import matplotlib.pyplot as plt
 import pyproj
 import pandas as pd
 from pyhdf.SD import SD, SDC
 from scipy.spatial import Delaunay
+
+import src.features.tools as tools
 
 
 log_fmt = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -16,54 +21,6 @@ logger = logging.getLogger(__name__)
 
 # globals
 keep = []
-
-def read_modis_aod(hdf_file):
-    # Read dataset.
-    aod = hdf_file.select('Optical_Depth_055')[0, :, :] * 0.001  # aod scaling factor
-
-
-    aod[aod < 0] = 0  # just get rid of the filled values for now
-
-    # Read global attribute.
-    fattrs = hdf_file.attributes(full=1)
-    ga = fattrs["StructMetadata.0"]
-    gridmeta = ga[0]
-
-    # Construct the grid.  The needed information is in a global attribute
-    # called 'StructMetadata.0'.  Use regular expressions to tease out the
-    # extents of the grid.
-    ul_regex = re.compile(r'''UpperLeftPointMtrs=\(
-                                      (?P<upper_left_x>[+-]?\d+\.\d+)
-                                      ,
-                                      (?P<upper_left_y>[+-]?\d+\.\d+)
-                                      \)''', re.VERBOSE)
-    match = ul_regex.search(gridmeta)
-    x0 = np.float(match.group('upper_left_x'))
-    y0 = np.float(match.group('upper_left_y'))
-
-    lr_regex = re.compile(r'''LowerRightMtrs=\(
-                                      (?P<lower_right_x>[+-]?\d+\.\d+)
-                                      ,
-                                      (?P<lower_right_y>[+-]?\d+\.\d+)
-                                      \)''', re.VERBOSE)
-    match = lr_regex.search(gridmeta)
-    x1 = np.float(match.group('lower_right_x'))
-    y1 = np.float(match.group('lower_right_y'))
-    ny, nx = aod.shape
-    xinc = (x1 - x0) / nx
-    yinc = (y1 - y0) / ny
-
-    x = np.linspace(x0, x0 + xinc * nx, nx)
-    y = np.linspace(y0, y0 + yinc * ny, ny)
-    xv, yv = np.meshgrid(x, y)
-
-    # In basemap, the sinusoidal projection is global, so we won't use it.
-    # Instead we'll convert the grid back to lat/lons.
-    sinu = pyproj.Proj("+proj=sinu +R=6371007.181 +nadgrids=@null +wktext")
-    wgs84 = pyproj.Proj("+init=EPSG:4326")
-    lon, lat = pyproj.transform(sinu, wgs84, xv, yv)
-
-    return aod, lat, lon
 
 
 def subset_plume(aod, plume_df):
@@ -139,7 +96,7 @@ def press(event):
 def display_image(im, hull_x, hull_y, plume_aod):
     fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(12,5))
     fig.canvas.mpl_connect('key_press_event', press)
-    ax0_im = ax0.imshow(im)
+    ax0_im = ax0.imshow(im, vmin=0)
     plt.colorbar(ax=ax0, mappable=ax0_im)
     ax0.plot(hull_x, hull_y, 'r--', lw=2)
     ax1.hist(plume_aod, bins=np.arange(0, 1, 0.02))
@@ -191,7 +148,7 @@ def main():
         aod_df = pd.read_csv(os.path.join(aod_df_path, aod_df_fname))
 
         hdf_file = SD(os.path.join(maiac_path, hdf_fname), SDC.READ)
-        aod, lat, lon = read_modis_aod(hdf_file)
+        aod, lat, lon, ts = tools.read_modis_aod(hdf_file)
 
         # iterate over plumes in the dataframe
         for id in hull_df.id.unique():

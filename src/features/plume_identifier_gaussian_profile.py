@@ -3,6 +3,9 @@ import os
 import re
 from datetime import datetime
 
+import matplotlib
+matplotlib.use("TKAgg")
+
 from pyhdf.SD import SD, SDC
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
@@ -266,25 +269,10 @@ def extract_plume_roi(best_threshold_index, threshold_masks,
         if plume_mask is None:
             continue
 
-        # plume_mask_a, region_a = find_plume_mask(aod, threshold_masks, threshold_index, fire_rows, fire_cols, fire_id)
-        # plume_mask_b, region_b = find_plume_mask(aod, threshold_masks, threshold_index-1, fire_rows, fire_cols, fire_id)
-        #
-        # # select the smaller plume mask
-        # if plume_mask_a is None and plume_mask_b is None:
-        #     continue
-        # if plume_mask_a is not None and plume_mask_b is not None:
-        #     if np.sum(plume_mask_a) > np.sum(plume_mask_b):
-        #         plume_mask = plume_mask_a
-        #         region = region_a
-        #     else:
-        #         plume_mask = plume_mask_b
-        #         region = region_b
-        # elif plume_mask_a is None:
-        #     plume_mask = plume_mask_b
-        #     region = region_b
-        # else:
-        #     plume_mask = plume_mask_a
-        #     region = region_a
+        print(plume_mask.shape)
+
+        # buffer plume mask by 5 pixels
+        plume_mask = binary_dilation(plume_mask, selem=np.ones([5, 5]))
 
         # now get the AOD
         plume_aod = aod[plume_mask]
@@ -388,7 +376,7 @@ def assess_plume(aod, labelled_mask, label_for_fire):
             if aod_max < MAX_LIM:
                 continue
 
-            # get plume principle axes for next two test
+            # get plume principle axes for next test
             yx = np.where(plume_mask == 1)
             eigvals, eigvecs = np.linalg.eig(np.cov(yx))
 
@@ -399,16 +387,8 @@ def assess_plume(aod, labelled_mask, label_for_fire):
                 v1, v2 = np.vstack((center + val * vec, center - val * vec))
                 dists.append(np.linalg.norm(v1 - v2))
                 coords.append([v1,v2])
-            #
-            # # CHECK 4 compare plume principle axes ratio
-            # if dists[0] > dists[1]:
-            #     if dists[0] / dists[1] < SIDE_RATIO:
-            #         continue
-            # else:
-            #     if dists[1] / dists[0] < SIDE_RATIO:
-            #         continue
-            #
-            # CHECK 5 check if plume is normal
+
+            # CHECK 4 check if plume doesn't have too many peaks
             try:
                 is_normal = check_plume_profile(dists, coords, aod, plume_mask, region)
             except:
@@ -513,46 +493,46 @@ def identify(aod, lat, lon, date_to_find, fire_df):
     :return:
     '''
 
-    # try:
-    # subset fires to only those in the image and with certain FRP
-    fire_subset_df = subset_fires_to_image(lat, lon, fire_df, date_to_find)
-    logger.info('...Extracted fires for image roi')
+    try:
+        # subset fires to only those in the image and with certain FRP
+        fire_subset_df = subset_fires_to_image(lat, lon, fire_df, date_to_find)
+        logger.info('...Extracted fires for image roi')
 
-    # build sensor grid indexes
-    image_rows, image_cols = grid_indexes(lat)
-    logger.info('...built grid indexes to assign fires to image grid')
+        # build sensor grid indexes
+        image_rows, image_cols = grid_indexes(lat)
+        logger.info('...built grid indexes to assign fires to image grid')
 
-    # locate fires in sensor coordinates
-    fire_rows, fire_cols = locate_fire_in_image(fire_subset_df, lat, lon, image_rows, image_cols)
-    logger.info('...assigned fires to image grid')
+        # locate fires in sensor coordinates
+        fire_rows, fire_cols = locate_fire_in_image(fire_subset_df, lat, lon, image_rows, image_cols)
+        logger.info('...assigned fires to image grid')
 
-    # cluster the fires and get central position
-    fire_cluster_image = cluster_fires(aod, fire_rows, fire_cols)
-    fire_rows, fire_cols = list(zip(*[r.centroid for r in regionprops(fire_cluster_image)]))
-    fire_rows = np.array(fire_rows).astype(int)
-    fire_cols = np.array(fire_cols).astype(int)
+        # cluster the fires and get central position
+        fire_cluster_image = cluster_fires(aod, fire_rows, fire_cols)
+        fire_rows, fire_cols = list(zip(*[r.centroid for r in regionprops(fire_cluster_image)]))
+        fire_rows = np.array(fire_rows).astype(int)
+        fire_cols = np.array(fire_cols).astype(int)
 
-    # setup the plume masks set over the defined threshold
-    masks_dict = generate_mask_dict(aod)
+        # setup the plume masks set over the defined threshold
+        masks_dict = generate_mask_dict(aod)
 
-    # iteratve over the set of plume masks and establish plume
-    # extents for all fire clusters over the various thresholds
-    plume_extents_across_thresholds = find_plume_extents(masks_dict, fire_rows, fire_cols)
+        # iteratve over the set of plume masks and establish plume
+        # extents for all fire clusters over the various thresholds
+        plume_extents_across_thresholds = find_plume_extents(masks_dict, fire_rows, fire_cols)
 
-    # find  threshold index for each fire cluster that can be used to
-    # index into the masks and the specific threshold used to generate
-    # the mask
-    threshold_index_for_fires = find_threshold_index(plume_extents_across_thresholds)
+        # find  threshold index for each fire cluster that can be used to
+        # index into the masks and the specific threshold used to generate
+        # the mask
+        threshold_index_for_fires = find_threshold_index(plume_extents_across_thresholds)
 
-    #
-    aod_df, extent_df = extract_plume_roi(threshold_index_for_fires, masks_dict,
-                                          fire_rows, fire_cols, lat, lon, aod)
+        #
+        aod_df, extent_df = extract_plume_roi(threshold_index_for_fires, masks_dict,
+                                              fire_rows, fire_cols, lat, lon, aod)
 
-    return aod_df, extent_df
+        return aod_df, extent_df
 
-    # except Exception as e:
-    #     print(e)
-    #     return None, None
+    except Exception as e:
+        print(e)
+        return None, None
 
 
 def main():
@@ -562,8 +542,8 @@ def main():
 
     # setup paths
     # TODO update when all MAIAC data has been pulled
-    #root = '/Volumes/INTENSO/kcl-ltss-bioatm/'
-    root = '/Users/danielfisher/Projects/kcl-ltss-bioatm/data/'
+    root = '/Volumes/INTENSO/kcl-ltss-bioatm/'
+    #root = '/Users/danielfisher/Projects/kcl-ltss-bioatm/data/'
     #root = '/Users/dnf/Projects/kcl-ltss-bioatm/data'
     maiac_path = os.path.join(root, 'raw/plume_identification/maiac')
     log_path = os.path.join(root , 'raw/plume_identification/logs')
@@ -601,23 +581,26 @@ def main():
         hull_fname = maiac_output_fname + '_extent.csv'
 
         # check if file already processed
-        # try:
-        #     with open(os.path.join(log_path, 'maiac_log.txt')) as log:
-        #         if maiac_fname+'\n' in log.read():
-        #             logger.info(maiac_output_fname + ' already processed, continuing...')
-        #             continue
-        #         else:
-        #             with open(os.path.join(log_path, 'maiac_log.txt'), 'a+') as log:
-        #                 log.write(maiac_fname + '\n')
-        # except IOError:
-        #     with open(os.path.join(log_path, 'maiac_log.txt'), 'w+') as log:
-        #         log.write(maiac_fname+'\n')
+        try:
+            with open(os.path.join(log_path, 'maiac_log.txt')) as log:
+                if maiac_fname+'\n' in log.read():
+                    logger.info(maiac_output_fname + ' already processed, continuing...')
+                    continue
+                else:
+                    with open(os.path.join(log_path, 'maiac_log.txt'), 'a+') as log:
+                        log.write(maiac_fname + '\n')
+        except IOError:
+            with open(os.path.join(log_path, 'maiac_log.txt'), 'w+') as log:
+                log.write(maiac_fname+'\n')
 
 
         hdf_file = SD(os.path.join(maiac_path, maiac_fname), SDC.READ)
-        aod, lat, lon = tools.read_modis_aod(hdf_file)
+        aod, lat, lon, ts = tools.read_modis_aod(hdf_file)
 
         aod_df, extent_df = identify(aod, lat, lon, date_to_find, viirs_fire_df)
+
+        if aod_df is None:
+            continue
 
         if plot:
             plot_fname = maiac_output_fname + '_plot.png'
@@ -635,6 +618,10 @@ def main():
             plt.yticks([])
             #plt.show()
             plt.savefig(os.path.join(plot_outpath, plot_fname), bbox_inches='tight')
+
+        # add datetime to dfs
+        aod_df['datetime'] = ts
+        extent_df['datetime'] = ts
 
         aod_df.to_csv(os.path.join(aod_df_outpath, aod_fname), index=False)
         extent_df.to_csv(os.path.join(hull_df_outpath, hull_fname),index=False)

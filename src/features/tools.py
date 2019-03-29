@@ -65,17 +65,26 @@ class utm_resampler(object):
 
 
 def read_modis_aod(hdf_file):
-    # Read dataset.
-    aod = hdf_file.select('Optical_Depth_055')[0, :, :] * 0.001  # aod scaling factor
-
-
-    aod[aod < 0] = -999  # just get rid of the filled values for now
 
     # Read global attribute.
     fattrs = hdf_file.attributes(full=1)
+
+    # need to select the most appropriate layer in the product
+    ts = fattrs['Orbit_time_stamp'][0].split(' ')
+    ts = [t for t in ts if t != '']  # valid timestamps
+    aqua_ts = [t for t in ts if 'A' in t]
+    min_aqua = min(aqua_ts)
+    ind = [i for i, t in enumerate(ts) if min_aqua in t][0]
+
+    # extract time
+    ts = re.search("[0-9]{11}", min_aqua).group()
+
+    # Read dataset.
+    aod = hdf_file.select('Optical_Depth_055')[ind, :, :] * 0.001  # aod scaling factor
+    aod[aod < 0] = -999  # just get rid of the filled values for now
+
     ga = fattrs["StructMetadata.0"]
     gridmeta = ga[0]
-
     # Construct the grid.  The needed information is in a global attribute
     # called 'StructMetadata.0'.  Use regular expressions to tease out the
     # extents of the grid.
@@ -110,4 +119,4 @@ def read_modis_aod(hdf_file):
     wgs84 = pyproj.Proj("+init=EPSG:4326")
     lon, lat = pyproj.transform(sinu, wgs84, xv, yv)
 
-    return aod, lat, lon
+    return aod, lat, lon, ts

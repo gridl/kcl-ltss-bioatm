@@ -569,7 +569,7 @@ def main():
 
 
         hdf_file = SD(os.path.join(maiac_path, maiac_fname), SDC.READ)
-        aod, lat, lon = tools.read_modis_aod(hdf_file)
+        aod, lat, lon, ts = tools.read_modis_aod(hdf_file)
 
         date_to_find = pd.Timestamp(datetime.strptime(maiac_fname.split('.')[1][1:], '%Y%j'))
 
