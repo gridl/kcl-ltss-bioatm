@@ -31,14 +31,15 @@ def construct_dist_matrix():
     dx, dy = np.meshgrid(x, y)
     return np.sqrt(dx**2 + dy**2)
 
-THRESHOLD_SET = np.abs(np.arange(0, 1, 0.03) - 1)  # PERHAPS THIS IS THE SOLITION - LARGER STEP
+THRESHOLD_STEP_SIZES = [0.1, 0.2, 0.3, 0.4, 0.5]  # PERHAPS THIS IS THE SOLITION - LARGER STEP
 P_ID_WIN_SIZE = 15
 DISTANCE_MATRIX = construct_dist_matrix()  # used to determine the distance of a fire from a plume in pixels
 MIN_PLUME_PIXELS = 100
 MAX_PLUME_PIXELS = 2000
-SIDE_RATIO = 5  # one sidelength must be three times longer than other
 MAX_LIM = 0.1
 NULL_VALUE = -999
+MAX_INVAL_PIX = 0.2
+N_PEAKS = 3
 
 
 def subset_fires_to_image(lat, lon, fire_df, date_to_find):
@@ -135,13 +136,13 @@ def cluster_fires(aod, fire_rows, fire_cols):
     return fire_labels
 
 
-def generate_mask_dict(aod):
+def generate_mask_dict(aod, threshold_range):
     """
     :param aod: the aod map
     :return: a set of masks based on different thresholds
     """
     masks_dict = {}
-    for t in THRESHOLD_SET:
+    for t in threshold_range:
         mask = aod > t
         # get rid of singleton pixels
         mask = binary_erosion(mask)
@@ -236,8 +237,8 @@ def find_threshold_index(plume_extents_across_all_fires):
     return best_threshold_index
 
 
-def extract_plume_roi(best_threshold_index, threshold_masks,
-                      fire_rows, fire_cols, lat, lon, aod):
+def extract_plume_roi(best_threshold_index, threshold_masks, threshold_range,
+                      fire_rows, fire_cols, lat, lon, aod, null_mask):
     """
 
     :param best_threshold_index:
@@ -249,7 +250,6 @@ def extract_plume_roi(best_threshold_index, threshold_masks,
     :param aod:
     :return:
     """
-    aod_df_list = []
     hull_lats = []
     hull_lons = []
     hull_x_coords = []
@@ -264,23 +264,17 @@ def extract_plume_roi(best_threshold_index, threshold_masks,
             continue
 
         # find the plume associated with the fire
-        plume_mask, region = find_plume_mask(aod, threshold_masks, threshold_index, fire_rows, fire_cols, fire_id)
+        plume_mask, region = find_plume_mask(aod, null_mask, threshold_range,
+                                             threshold_masks, threshold_index,
+                                             fire_rows, fire_cols, fire_id)
 
         if plume_mask is None:
             continue
 
-        print(plume_mask.shape)
-
         # buffer plume mask by 5 pixels
         plume_mask = binary_dilation(plume_mask, selem=np.ones([5, 5]))
 
-        # now get the AOD
-        plume_aod = aod[plume_mask]
-        aod_mean = np.mean(plume_aod)
-        aod_sd = np.std(plume_aod)
-
-
-        # get bounding coordinates of the plume (for later use in Shapely to assign fires)
+        # get bounding coordinates of the plume
         y, x = np.where(plume_mask == 1)
         points = np.array(list(zip(y, x)))
         hull = ConvexHull(points)
@@ -291,27 +285,8 @@ def extract_plume_roi(best_threshold_index, threshold_masks,
         hull_y_coords.extend(hull_indicies_y)
         hull_ids.extend(np.ones(hull_indicies_y.size) * id)
 
-        # get the bounding box
-        min_r, min_c, max_r, max_c = region.bbox
-
-        # make the aod dataframe
-        dd = {'plume_pixel_extent': int(region.area.copy()),
-              'plume_min_row': min_r,
-              'plume_max_row': max_r,
-              'plume_min_col': min_c,
-              'plume_max_col': max_c,
-              'plume_aod_mean': aod_mean,
-              'plume_aod_sd': aod_sd,
-              'bg_aod_level': threshold_index,
-              'id': id}
-        aod_df = pd.DataFrame()
-        aod_df = aod_df.append(dd, ignore_index=True)
-        aod_df_list.append(aod_df)
-
         # update the id if we find a region with a fire
         id += 1
-
-    aod_scene_df = pd.concat(aod_df_list)
 
     # Create the extent dataframe
     extents = [('id', hull_ids),
@@ -320,19 +295,17 @@ def extract_plume_roi(best_threshold_index, threshold_masks,
                ('hull_x', hull_x_coords),
                ('hull_y', hull_y_coords),
                ]
-    extent_scene_df = pd.DataFrame.from_items(extents)
+    hull_df = pd.DataFrame.from_items(extents)
 
     # Drop plume duplicates
-    aod_scene_df = aod_scene_df.set_index('id').drop_duplicates().reset_index()
-    extent_scene_df = extent_scene_df[extent_scene_df.id.isin(aod_scene_df.id)]
-
-    return aod_scene_df, extent_scene_df
+    return hull_df
 
 
-def find_plume_mask(aod, threshold_masks, index, fire_rows, fire_cols, fire_id):
+def find_plume_mask(aod, null_mask, threshold_range,
+                    threshold_masks, index, fire_rows, fire_cols, fire_id):
 
 
-    mask = threshold_masks[THRESHOLD_SET[index]]
+    mask = threshold_masks[threshold_range[index]]
 
     # label the two masks
     labelled_mask = label(mask)
@@ -351,12 +324,12 @@ def find_plume_mask(aod, threshold_masks, index, fire_rows, fire_cols, fire_id):
     label_for_fire = all_plume_labels[fire_id]
 
     # check if any plume associate with fire
-    plume_mask, region = assess_plume(aod, labelled_mask, label_for_fire)
+    plume_mask, region = assess_plume(aod, null_mask, labelled_mask, label_for_fire)
 
     return plume_mask, region
 
 
-def assess_plume(aod, labelled_mask, label_for_fire):
+def assess_plume(aod, null_mask, labelled_mask, label_for_fire):
     # Check all plumes in the image
     for region in regionprops(labelled_mask):
         if region.label == label_for_fire:
@@ -369,11 +342,18 @@ def assess_plume(aod, labelled_mask, label_for_fire):
             if region.area > MAX_PLUME_PIXELS:
                 continue
 
-            # # CHECK 3 if plume AOD is less than the needed max the reject
+            # CHECK 3 if plume AOD is less than the needed max the reject
             plume_mask = labelled_mask == label_for_fire
             plume_aod = aod[plume_mask]
+
             aod_max = np.max(plume_aod)
             if aod_max < MAX_LIM:
+                continue
+
+            # TODO Check 4 if more than some percentage of AOD pixels are null then do not proceed
+            plume_null = null_mask[plume_mask]
+            plume_invalid_pc = (np.sum(plume_null) / float(plume_null.size))
+            if plume_invalid_pc > MAX_INVAL_PIX:
                 continue
 
             # get plume principle axes for next test
@@ -388,7 +368,7 @@ def assess_plume(aod, labelled_mask, label_for_fire):
                 dists.append(np.linalg.norm(v1 - v2))
                 coords.append([v1,v2])
 
-            # CHECK 4 check if plume doesn't have too many peaks
+            # CHECK 5 check if plume doesn't have too many peaks
             try:
                 is_normal = check_plume_profile(dists, coords, aod, plume_mask, region)
             except:
@@ -417,11 +397,7 @@ def check_plume_profile(dists, coords, aod, plume_mask, region):
     # get min and max x for the region
     min_r, min_c, max_r, max_c = region.bbox
 
-    # get out AOD subset
     aod_subset = aod[min_r:max_r, min_c:max_c]
-
-    # interpolate AOD subset
-    aod_subset = interpolate_aod(aod_subset)
 
     # create a range of numbers between these two points
     x = np.linspace(min_c, max_c, 1000)
@@ -443,7 +419,6 @@ def check_plume_profile(dists, coords, aod, plume_mask, region):
     y = y - min_r
 
     aod_transect = ndimage.map_coordinates(aod_subset, (y, x), order=1)
-    #smoothed_aod_transect = savgol_filter(aod_transect, 251, 1)
 
     n_peaks, _ = find_peaks(aod_transect)
 
@@ -452,35 +427,29 @@ def check_plume_profile(dists, coords, aod, plume_mask, region):
     #            cmap='gray', interpolation='None', vmin=0, vmax=1)
     # ax0.plot(x, y, 'r.')
     # ax1.plot(aod_transect)
-    # ax1.plot(smoothed_aod_transect)
     #
     # plt.show()
 
-    if len(n_peaks) <= 3:
+    if len(n_peaks) <= N_PEAKS:
         return True
     else:
         return False
 
 
-def interpolate_aod(aod):
+def interpolate_aod_nearest(aod):
 
     good_mask = aod != NULL_VALUE
 
     # build the interpolation grid
-    y = np.linspace(0, 1, aod.shape[0])
-    x = np.linspace(0, 1, aod.shape[1])
-    xx, yy = np.meshgrid(x, y)
+    xx, yy = np.meshgrid(np.arange(aod.shape[1]), np.arange(aod.shape[0]))
+    xym = np.vstack((np.ravel(xx[good_mask]), np.ravel(yy[good_mask]))).T
 
-    # create interpolated grid (can extend to various methods)
-    rbf = interpolate.Rbf(xx[good_mask], yy[good_mask], aod[good_mask], function='linear')
-    interpolated_aod = rbf(xx, yy)
-
-    aod[~good_mask] = interpolated_aod[~good_mask]
-    return aod
+    aod = np.ravel(aod[good_mask])
+    interp = interpolate.NearestNDInterpolator(xym, aod)
+    return interp(np.ravel(xx), np.ravel(yy)).reshape(xx.shape)
 
 
-
-def identify(aod, lat, lon, date_to_find, fire_df):
+def identify(aod, null_mask, lat, lon, date_to_find, fire_df):
     '''
     What does this do?
 
@@ -512,27 +481,37 @@ def identify(aod, lat, lon, date_to_find, fire_df):
         fire_rows = np.array(fire_rows).astype(int)
         fire_cols = np.array(fire_cols).astype(int)
 
-        # setup the plume masks set over the defined threshold
-        masks_dict = generate_mask_dict(aod)
+        # iterate over the thresholds
+        df_list = []
+        for threshold_step_size in THRESHOLD_STEP_SIZES:
 
-        # iteratve over the set of plume masks and establish plume
-        # extents for all fire clusters over the various thresholds
-        plume_extents_across_thresholds = find_plume_extents(masks_dict, fire_rows, fire_cols)
+            # establish range of thresholds to test
+            threshold_range = np.abs(np.arange(0, 1, threshold_step_size) - 1)
 
-        # find  threshold index for each fire cluster that can be used to
-        # index into the masks and the specific threshold used to generate
-        # the mask
-        threshold_index_for_fires = find_threshold_index(plume_extents_across_thresholds)
+            # setup the plume masks set over the defined threshold
+            masks_dict = generate_mask_dict(aod, threshold_range)
 
-        #
-        aod_df, extent_df = extract_plume_roi(threshold_index_for_fires, masks_dict,
-                                              fire_rows, fire_cols, lat, lon, aod)
+            # iteratve over the set of plume masks and establish plume
+            # extents for all fire clusters over the various thresholds
+            plume_extents_across_thresholds = find_plume_extents(masks_dict, fire_rows, fire_cols)
 
-        return aod_df, extent_df
+            # find  threshold index for each fire cluster that can be used to
+            # index into the masks and the specific threshold used to generate
+            # the mask
+            threshold_index_for_fires = find_threshold_index(plume_extents_across_thresholds)
+
+            #
+            hull_df = extract_plume_roi(threshold_index_for_fires, masks_dict, threshold_range,
+                                                  fire_rows, fire_cols, lat, lon, aod, null_mask)
+            df_list.append(hull_df)
+
+        # TODO return a fire dataframe as well
+
+        return pd.concat(df_list)
 
     except Exception as e:
         print(e)
-        return None, None
+        return None
 
 
 def main():
@@ -542,8 +521,8 @@ def main():
 
     # setup paths
     # TODO update when all MAIAC data has been pulled
-    root = '/Volumes/INTENSO/kcl-ltss-bioatm/'
-    #root = '/Users/danielfisher/Projects/kcl-ltss-bioatm/data/'
+    #root = '/Volumes/INTENSO/kcl-ltss-bioatm/'
+    root = '/Users/danielfisher/Projects/kcl-ltss-bioatm/data/'
     #root = '/Users/dnf/Projects/kcl-ltss-bioatm/data'
     maiac_path = os.path.join(root, 'raw/plume_identification/maiac')
     log_path = os.path.join(root , 'raw/plume_identification/logs')
@@ -559,15 +538,6 @@ def main():
 
     for maiac_fname in os.listdir(maiac_path):
 
-        # NEW TEST SCENE MCD19A2.A2017210.h12v11.006.2018117231329
-        # NEW TEST SCENE MCD19A2.A2017212.h12v09.006.2018117200853
-        # NEW TEST SCENE MCD19A2.A2017223.h12v11.006.2018118002333
-
-
-        # if 'MCD19A2.A2017210.h12v11.006.2018117231329' not in maiac_fname:
-        #     continue
-        # MCD19A2.A2017210.h12v11.006.2018117231329
-        # 'MCD19A2.A2017255.h12v09.006.2018119143112'
 
         if '.hdf' not in maiac_fname:
             continue
@@ -577,54 +547,58 @@ def main():
 
         # check if MAIAC file has already been processed
         maiac_output_fname = maiac_fname[:-4]
-        aod_fname = maiac_output_fname + '_aod.csv'
         hull_fname = maiac_output_fname + '_extent.csv'
 
         # check if file already processed
-        try:
-            with open(os.path.join(log_path, 'maiac_log.txt')) as log:
-                if maiac_fname+'\n' in log.read():
-                    logger.info(maiac_output_fname + ' already processed, continuing...')
-                    continue
-                else:
-                    with open(os.path.join(log_path, 'maiac_log.txt'), 'a+') as log:
-                        log.write(maiac_fname + '\n')
-        except IOError:
-            with open(os.path.join(log_path, 'maiac_log.txt'), 'w+') as log:
-                log.write(maiac_fname+'\n')
+        # try:
+        #     with open(os.path.join(log_path, 'maiac_log.txt')) as log:
+        #         if maiac_fname+'\n' in log.read():
+        #             logger.info(maiac_output_fname + ' already processed, continuing...')
+        #             continue
+        #         else:
+        #             with open(os.path.join(log_path, 'maiac_log.txt'), 'a+') as log:
+        #                 log.write(maiac_fname + '\n')
+        # except IOError:
+        #     with open(os.path.join(log_path, 'maiac_log.txt'), 'w+') as log:
+        #         log.write(maiac_fname+'\n')
 
 
         hdf_file = SD(os.path.join(maiac_path, maiac_fname), SDC.READ)
-        aod, lat, lon, ts = tools.read_modis_aod(hdf_file)
+        aod_dict, lat, lon = tools.read_modis_aod(hdf_file)
 
-        aod_df, extent_df = identify(aod, lat, lon, date_to_find, viirs_fire_df)
+        # set up list to hold datadrames
+        df_list = []
 
-        if aod_df is None:
-            continue
+        for ts, aod in aod_dict.items():
 
-        if plot:
-            plot_fname = maiac_output_fname + '_plot.png'
+            # create an interpolated aod image
+            null_mask = aod == NULL_VALUE
+            aod_i = interpolate_aod_nearest(aod)
 
-            fig, ax = plt.subplots(figsize=(10, 6))
-            ax.imshow(aod, cmap='gray', interpolation='None', vmin=0, vmax=1)
-            for i, r in aod_df.iterrows():
-                rect = mpatches.Rectangle((r.plume_min_col,
-                                           r.plume_min_row),
-                                           r.plume_max_col - r.plume_min_col,
-                                           r.plume_max_row - r.plume_min_row,
-                                           fill=False, edgecolor='red', linewidth=1)
-                ax.add_patch(rect)
-            plt.xticks([])
-            plt.yticks([])
-            #plt.show()
-            plt.savefig(os.path.join(plot_outpath, plot_fname), bbox_inches='tight')
+            hull_df = identify(aod_i, null_mask, lat, lon, date_to_find, viirs_fire_df)
 
-        # add datetime to dfs
-        aod_df['datetime'] = ts
-        extent_df['datetime'] = ts
+            if hull_df is None:
+                continue
 
-        aod_df.to_csv(os.path.join(aod_df_outpath, aod_fname), index=False)
-        extent_df.to_csv(os.path.join(hull_df_outpath, hull_fname),index=False)
+            if plot:
+                plot_fname = ts + '_plot.png'
+
+                fig, ax = plt.subplots(figsize=(10, 6))
+                ax.imshow(aod, cmap='gray', interpolation='None', vmin=0, vmax=1)
+                for id in hull_df.id.unique():
+                    sub_df = hull_df[hull_df.id == id]
+                    ax.plot(sub_df.hull_x, sub_df.hull_y, 'r--', lw=0.5)
+                plt.xticks([])
+                plt.yticks([])
+                #plt.show()
+                plt.savefig(os.path.join(plot_outpath, plot_fname), bbox_inches='tight')
+
+            # add datetime to dfs
+            hull_df['datetime'] = ts
+            df_list.append(hull_df)
+
+        out_df = pd.concat(df_list)
+        out_df.to_csv(os.path.join(hull_df_outpath, hull_fname),index=False)
 
 
 if __name__ == "__main__":

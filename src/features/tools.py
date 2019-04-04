@@ -66,22 +66,25 @@ class utm_resampler(object):
 
 def read_modis_aod(hdf_file):
 
+    # set up data dict
+    dd = {}
+
     # Read global attribute.
     fattrs = hdf_file.attributes(full=1)
 
     # need to select the most appropriate layer in the product
-    ts = fattrs['Orbit_time_stamp'][0].split(' ')
-    ts = [t for t in ts if t != '']  # valid timestamps
-    aqua_ts = [t for t in ts if 'A' in t]
-    min_aqua = min(aqua_ts)
-    ind = [i for i, t in enumerate(ts) if min_aqua in t][0]
+    timestamps = fattrs['Orbit_time_stamp'][0].split(' ')
+    timestamps = [t for t in timestamps if t != '']  # valid timestamps
+    for i, timestamp in enumerate(timestamps):
 
-    # extract time
-    ts = re.search("[0-9]{11}", min_aqua).group()
+        # extract time
+        t = re.search("[0-9]{11}[A-Z]{1}", timestamp).group()
 
-    # Read dataset.
-    aod = hdf_file.select('Optical_Depth_055')[ind, :, :] * 0.001  # aod scaling factor
-    aod[aod < 0] = -999  # just get rid of the filled values for now
+        # Read dataset.
+        aod = hdf_file.select('Optical_Depth_055')[i, :, :] * 0.001  # aod scaling factor
+        aod[aod < 0] = -999  # just get rid of the filled values for now
+
+        dd[t] = aod
 
     ga = fattrs["StructMetadata.0"]
     gridmeta = ga[0]
@@ -119,4 +122,4 @@ def read_modis_aod(hdf_file):
     wgs84 = pyproj.Proj("+init=EPSG:4326")
     lon, lat = pyproj.transform(sinu, wgs84, xv, yv)
 
-    return aod, lat, lon, ts
+    return dd, lat, lon
