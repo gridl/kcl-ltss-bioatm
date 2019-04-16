@@ -31,7 +31,8 @@ def construct_dist_matrix():
     dx, dy = np.meshgrid(x, y)
     return np.sqrt(dx**2 + dy**2)
 
-THRESHOLD_STEP_SIZES = [0.1, 0.2, 0.3, 0.4, 0.5]  # PERHAPS THIS IS THE SOLITION - LARGER STEP
+THRESHOLD_STEP_SIZES = [0.02, 0.03, 0.04]  # PERHAPS THIS IS THE SOLITION - LARGER STEP
+THRESHOLD_MAX = [0.5, 0.75, 1]
 P_ID_WIN_SIZE = 15
 DISTANCE_MATRIX = construct_dist_matrix()  # used to determine the distance of a fire from a plume in pixels
 MIN_PLUME_PIXELS = 100
@@ -39,7 +40,9 @@ MAX_PLUME_PIXELS = 2000
 MAX_LIM = 0.1
 NULL_VALUE = -999
 MAX_INVAL_PIX = 0.2
+MIN_AXIS_RATIO = 8  # principle axis needs to be twice as long as second axis
 N_PEAKS = 3
+
 
 
 def subset_fires_to_image(lat, lon, fire_df, date_to_find):
@@ -238,7 +241,7 @@ def find_threshold_index(plume_extents_across_all_fires):
 
 
 def extract_plume_roi(best_threshold_index, threshold_masks, threshold_range,
-                      fire_rows, fire_cols, lat, lon, aod, null_mask):
+                      fire_rows, fire_cols, lat, lon, aod, null_mask, min_id):
     """
 
     :param best_threshold_index:
@@ -255,7 +258,7 @@ def extract_plume_roi(best_threshold_index, threshold_masks, threshold_range,
     hull_x_coords = []
     hull_y_coords = []
     hull_ids = []
-    id = int(0)
+    id = min_id
 
     for fire_id, threshold_index in enumerate(best_threshold_index):
 
@@ -368,7 +371,16 @@ def assess_plume(aod, null_mask, labelled_mask, label_for_fire):
                 dists.append(np.linalg.norm(v1 - v2))
                 coords.append([v1,v2])
 
-            # CHECK 5 check if plume doesn't have too many peaks
+            # CHECK 5 ratio of largest to smallest vector has to be above some limit
+            if dists[0] > dists[1]:
+                axis_ratio = dists[0] / dists[1]
+            else:
+                axis_ratio = dists[1] / dists[0]
+            if axis_ratio < MIN_AXIS_RATIO:
+                continue
+
+
+            # CHECK 6 check if plume doesn't have too many peaks
             try:
                 is_normal = check_plume_profile(dists, coords, aod, plume_mask, region)
             except:
@@ -449,7 +461,7 @@ def interpolate_aod_nearest(aod):
     return interp(np.ravel(xx), np.ravel(yy)).reshape(xx.shape)
 
 
-def identify(aod, null_mask, lat, lon, date_to_find, fire_df):
+def identify(aod, null_mask, lat, lon, fire_rows, fire_cols):
     '''
     What does this do?
 
@@ -463,17 +475,6 @@ def identify(aod, null_mask, lat, lon, date_to_find, fire_df):
     '''
 
     try:
-        # subset fires to only those in the image and with certain FRP
-        fire_subset_df = subset_fires_to_image(lat, lon, fire_df, date_to_find)
-        logger.info('...Extracted fires for image roi')
-
-        # build sensor grid indexes
-        image_rows, image_cols = grid_indexes(lat)
-        logger.info('...built grid indexes to assign fires to image grid')
-
-        # locate fires in sensor coordinates
-        fire_rows, fire_cols = locate_fire_in_image(fire_subset_df, lat, lon, image_rows, image_cols)
-        logger.info('...assigned fires to image grid')
 
         # cluster the fires and get central position
         fire_cluster_image = cluster_fires(aod, fire_rows, fire_cols)
@@ -481,12 +482,14 @@ def identify(aod, null_mask, lat, lon, date_to_find, fire_df):
         fire_rows = np.array(fire_rows).astype(int)
         fire_cols = np.array(fire_cols).astype(int)
 
+
         # iterate over the thresholds
         df_list = []
-        for threshold_step_size in THRESHOLD_STEP_SIZES:
+        min_id = int(0)
+        for threshold_step_size, threshold_max in zip(THRESHOLD_STEP_SIZES, THRESHOLD_MAX):
 
             # establish range of thresholds to test
-            threshold_range = np.abs(np.arange(0, 1, threshold_step_size) - 1)
+            threshold_range = np.abs(np.arange(0, threshold_max, threshold_step_size) - threshold_max)
 
             # setup the plume masks set over the defined threshold
             masks_dict = generate_mask_dict(aod, threshold_range)
@@ -502,16 +505,38 @@ def identify(aod, null_mask, lat, lon, date_to_find, fire_df):
 
             #
             hull_df = extract_plume_roi(threshold_index_for_fires, masks_dict, threshold_range,
-                                                  fire_rows, fire_cols, lat, lon, aod, null_mask)
+                                        fire_rows, fire_cols, lat, lon, aod, null_mask,
+                                        min_id)
             df_list.append(hull_df)
 
-        # TODO return a fire dataframe as well
+            # TODO return a fire dataframe as well
+
+            # update id
+            min_id = hull_df.id.max() + 1
+
 
         return pd.concat(df_list)
+
 
     except Exception as e:
         print(e)
         return None
+
+
+def load_fires(lat, lon, fire_df, date_to_find):
+    # subset fires to only those in the image and with certain FRP
+    fire_subset_df = subset_fires_to_image(lat, lon, fire_df, date_to_find)
+    logger.info('...Extracted fires for image roi')
+
+    # build sensor grid indexes
+    image_rows, image_cols = grid_indexes(lat)
+    logger.info('...built grid indexes to assign fires to image grid')
+
+    # locate fires in sensor coordinates
+    fire_rows, fire_cols = locate_fire_in_image(fire_subset_df, lat, lon, image_rows, image_cols)
+    logger.info('...assigned fires to image grid')
+
+    return fire_rows, fire_cols
 
 
 def main():
@@ -521,8 +546,8 @@ def main():
 
     # setup paths
     # TODO update when all MAIAC data has been pulled
-    #root = '/Volumes/INTENSO/kcl-ltss-bioatm/'
-    root = '/Users/danielfisher/Projects/kcl-ltss-bioatm/data/'
+    root = '/Volumes/INTENSO/kcl-ltss-bioatm/'
+    #root = '/Users/danielfisher/Projects/kcl-ltss-bioatm/data/'
     #root = '/Users/dnf/Projects/kcl-ltss-bioatm/data'
     maiac_path = os.path.join(root, 'raw/plume_identification/maiac')
     log_path = os.path.join(root , 'raw/plume_identification/logs')
@@ -538,6 +563,8 @@ def main():
 
     for maiac_fname in os.listdir(maiac_path):
 
+        logger.info('Processing MAIAC file: ' + maiac_fname)
+
 
         if '.hdf' not in maiac_fname:
             continue
@@ -550,34 +577,49 @@ def main():
         hull_fname = maiac_output_fname + '_extent.csv'
 
         # check if file already processed
-        # try:
-        #     with open(os.path.join(log_path, 'maiac_log.txt')) as log:
-        #         if maiac_fname+'\n' in log.read():
-        #             logger.info(maiac_output_fname + ' already processed, continuing...')
-        #             continue
-        #         else:
-        #             with open(os.path.join(log_path, 'maiac_log.txt'), 'a+') as log:
-        #                 log.write(maiac_fname + '\n')
-        # except IOError:
-        #     with open(os.path.join(log_path, 'maiac_log.txt'), 'w+') as log:
-        #         log.write(maiac_fname+'\n')
+        try:
+            with open(os.path.join(log_path, 'maiac_log.txt')) as log:
+                if maiac_fname+'\n' in log.read():
+                    logger.info(maiac_output_fname + ' already processed, continuing...')
+                    continue
+                else:
+                    with open(os.path.join(log_path, 'maiac_log.txt'), 'a+') as log:
+                        log.write(maiac_fname + '\n')
+        except IOError:
+            with open(os.path.join(log_path, 'maiac_log.txt'), 'w+') as log:
+                log.write(maiac_fname+'\n')
 
 
         hdf_file = SD(os.path.join(maiac_path, maiac_fname), SDC.READ)
         aod_dict, lat, lon = tools.read_modis_aod(hdf_file)
+
+        # read in the fires for the day seen on the lat lon grid
+        fire_rows, fire_cols = load_fires(lat, lon, viirs_fire_df, date_to_find)
+        if len(fire_rows) < 20:
+            logger.info('Too few fire - continuing...')
+            continue
+        if not fire_rows:
+            logger.info('No fires in scene - continuing...')
+            continue
 
         # set up list to hold datadrames
         df_list = []
 
         for ts, aod in aod_dict.items():
 
-            # create an interpolated aod image
-            null_mask = aod == NULL_VALUE
-            aod_i = interpolate_aod_nearest(aod)
+            try:
+                # create an interpolated aod image
+                null_mask = aod == NULL_VALUE
+                aod_i = interpolate_aod_nearest(aod)
+            except:
+                continue
 
-            hull_df = identify(aod_i, null_mask, lat, lon, date_to_find, viirs_fire_df)
+            hull_df = identify(aod_i, null_mask, lat, lon, fire_rows, fire_cols)
 
             if hull_df is None:
+                continue
+
+            if hull_df.empty:
                 continue
 
             if plot:
@@ -597,9 +639,11 @@ def main():
             hull_df['datetime'] = ts
             df_list.append(hull_df)
 
-        out_df = pd.concat(df_list)
-        out_df.to_csv(os.path.join(hull_df_outpath, hull_fname),index=False)
-
+        try:
+            out_df = pd.concat(df_list)
+            out_df.to_csv(os.path.join(hull_df_outpath, hull_fname),index=False)
+        except:
+            continue
 
 if __name__ == "__main__":
     main()

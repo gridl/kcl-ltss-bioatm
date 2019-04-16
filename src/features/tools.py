@@ -75,6 +75,11 @@ def read_modis_aod(hdf_file):
     # need to select the most appropriate layer in the product
     timestamps = fattrs['Orbit_time_stamp'][0].split(' ')
     timestamps = [t for t in timestamps if t != '']  # valid timestamps
+
+    if len(timestamps) > 4:
+        timestamps = [t for t in timestamps if 'A' in t]
+        timestamps = [timestamps[0]]
+
     for i, timestamp in enumerate(timestamps):
 
         # extract time
