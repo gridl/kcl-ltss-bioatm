@@ -135,16 +135,24 @@ def display_image(im, hull_x, hull_y, plume_aod):
 
 
 def main():
+
+    plume=True
+
     global keep
 
     #root = '/Users/dnf/Projects/kcl-ltss-bioatm/data'
     root = '/Volumes/INTENSO/kcl-ltss-bioatm'
     maiac_path = os.path.join(root, 'raw/plume_identification/maiac')
     hull_df_path = os.path.join(root, 'raw/plume_identification/dataframes/full/hull')
-    log_path = os.path.join(root , 'raw/plume_identification/logs')
 
-    hull_df_outpath = os.path.join(root, 'raw/plume_identification/dataframes/reduced/hull')
-    aod_df_outpath = os.path.join(root, 'raw/plume_identification/dataframes/reduced/aod')
+    if plume:
+        log_path = os.path.join(root , 'raw/plume_identification/logs')
+        log_fname = 'plume_reduced_log.txt'
+        hull_df_outpath = os.path.join(root, 'raw/plume_identification/dataframes/reduced/plume/hull')
+    else:
+        log_path = os.path.join(root , 'raw/plume_identification/logs')
+        log_fname = 'not_plume_reduced_log.txt'
+        hull_df_outpath = os.path.join(root, 'raw/plume_identification/dataframes/reduced/not_plume/hull')
 
     # load in a image
     for hull_df_fname in os.listdir(hull_df_path):
@@ -154,15 +162,15 @@ def main():
 
         # check if file already processed
         try:
-            with open(os.path.join(log_path, 'reduced_log.txt')) as log:
+            with open(os.path.join(log_path, log_fname)) as log:
                 if hull_df_fname + '\n' in log.read():
                     logger.info(hull_df_fname + ' already processed, continuing...')
                     continue
                 else:
-                    with open(os.path.join(log_path, 'reduced_log.txt'), 'a+') as log:
+                    with open(os.path.join(log_path, log_fname), 'a+') as log:
                         log.write(hull_df_fname + '\n')
         except IOError:
-            with open(os.path.join(log_path, 'reduced_log.txt'), 'w+') as log:
+            with open(os.path.join(log_path, log_fname), 'w+') as log:
                 log.write(hull_df_fname + '\n')
 
         # strip off filename
